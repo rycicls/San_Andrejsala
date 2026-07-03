@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Admin — San Andrejsala{% endblock %}
+{% block content %}
+
+<section class="card">
+    <h1>Vadības panelis</h1>
+    <div class="admin-controls">
+        <span class="pill">{{ "SPĒLE IET" if gs.running else "PAUZĒTS" }} · Diena {{ gs.current_day }}</span>
+        <form method="post" action="/admin/game" class="inline">
+            {% if gs.running %}
+            <button name="action" value="pause">Pauzēt</button>
+            {% else %}
+            <button name="action" value="start">Sākt spēli</button>
+            {% endif %}
+        </form>
+        <form method="post" action="/admin/day" class="inline"
+              onsubmit="return confirm('Sākt nākamo dienu un piešķirt dienas IP visām komandām?')">
+            <button type="submit">Nākamā diena (+dienas IP)</button>
+        </form>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Komandas</h2>
+    <table class="grid">
+        <tr><th>Komanda</th><th>IP</th><th>Reģions</th><th>Koriģēt IP</th><th>Mainīt reģionu</th></tr>
+        {% for t in teams %}
+        <tr>
+            <td>{{ t.name }} <span class="muted small">({{ t.username }})</span></td>
+            <td>{{ '%.1f'|format(t.ip_balance) }}</td>
+            <td>{{ region_by_id[t.current_region_id].name if t.current_region_id else "—" }}</td>
+            <td>
+                <form method="post" action="/admin/teams/{{ t.id }}/adjust" class="inline">
+                    <input type="number" name="delta" step="1" placeholder="±IP" required style="width:5rem">
+                    <input type="text" name="reason" placeholder="iemesls" style="width:8rem">
+                    <button type="submit">OK</button>
+                </form>
+            </td>
+            <td>
+                <form method="post" action="/admin/teams/{{ t.id }}/region" class="inline">
+                    <select name="region_id">
+                        <option value="0">—</option>
+                        {% for r in regions %}
+                        <option value="{{ r.id }}" {{ "selected" if t.current_region_id == r.id else "" }}>{{ r.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Set</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</section>
+
+<section class="card">
+    <h2>Izlozēt dienas izaicinājumus</h2>
+    <p class="muted small">Izlozē 4 nejaušus izaicinājumus reģionam uz šo dienu (pārraksta iepriekšējo izlozi).</p>
+    {% for r in regions %}
+    <form method="post" action="/admin/draw" class="inline">
+        <input type="hidden" name="region_id" value="{{ r.id }}">
+        <button type="submit">Izlozēt: {{ r.name }}</button>
+    </form>
+    {% endfor %}
+</section>
+
+<section class="card">
+    <h2>Neizšķirtie izaicinājumi</h2>
+    <table class="grid">
+        <tr><th>Komanda</th><th>Izaicinājums</th><th>Likme</th><th>Rezultāts</th></tr>
+        {% for p in pending %}
+        <tr>
+            <td>{{ p.team.name }}</td>
+            <td>{{ p.challenge.title if p.challenge else "?" }}
+                <span class="muted small">x{{ '%.2f'|format(p.challenge.multiplier) if p.challenge else "" }}</span>
+            </td>
+            <td>{{ '%.0f'|format(p.attempt.bet) }}</td>
+            <td>
+                <form method="post" action="/admin/attempts/{{ p.attempt.id }}/resolve" class="inline">
+                    <button name="result" value="success" class="ok">Izpildīts</button>
+                    <button name="result" value="fail" class="bad">Neizpildīts</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">Nav gaidošu izaicinājumu.</td></tr>
+        {% endfor %}
+    </table>
+</section>
+
+{% endblock %}

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}{{ team.name }} — San Andrejsala{% endblock %}
+{% block content %}
+
+<section class="card balance-card">
+    <div class="balance-head">
+        <span>Ietekmes punkti (IP)</span>
+        <span class="pill" id="status">{{ "SPĒLE IET" if gs.running else "PAUZĒTS" }}</span>
+    </div>
+    <div class="balance" id="balance" data-rate="{{ '%.4f'|format(rate) }}" data-running="{{ 1 if gs.running else 0 }}">
+        {{ '%.1f'|format(team.ip_balance) }}
+    </div>
+    <div class="balance-sub">
+        Zūd <b id="rate">{{ '%.3f'|format(rate) }}</b> IP/min
+        · Diena <b>{{ gs.current_day }}</b>
+        · Reģions: <b>{{ region.name if region else "—" }}</b>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Kur jūs esat?</h2>
+    <form method="post" action="/set-region" class="inline">
+        <select name="region_id">
+            <option value="0" {{ "selected" if not region else "" }}>— ārpus reģiona —</option>
+            {% for r in regions %}
+            <option value="{{ r.id }}" {{ "selected" if region and r.id == region.id else "" }}>
+                {{ r.name }} (nodoklis {{ (r.tax_rate*100)|int }}%)
+            </option>
+            {% endfor %}
+        </select>
+        <button type="submit">Iestatīt reģionu</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Izaicinājumi {% if region %}— {{ region.name }}{% endif %}</h2>
+    {% if not region %}
+        <p class="muted">Iestatiet reģionu, lai redzētu dienas izaicinājumus.</p>
+    {% elif not dailies %}
+        <p class="muted">Šai dienai šim reģionam vēl nav izlozēti izaicinājumi.</p>
+    {% else %}
+        {% for d in dailies %}
+        <div class="challenge {{ 'locked' if d.daily.locked else '' }}">
+            <div class="challenge-top">
+                <b>{{ d.challenge.title }}</b>
+                <span class="mult">x{{ '%.2f'|format(d.challenge.multiplier) }}</span>
+            </div>
+            <p class="muted">{{ d.challenge.description }}</p>
+            {% if d.daily.locked %}
+                <p class="done">Izpildīts — vairs nav pieejams šodien.</p>
+            {% elif d.attempt %}
+                <p class="pending">Jūsu likme: {{ '%.0f'|format(d.attempt.bet) }} IP — statuss: {{ d.attempt.status }}</p>
+            {% else %}
+                <form method="post" action="/challenges/{{ d.daily.id }}/bet" class="inline">
+                    <input type="number" name="amount" min="1" step="1" placeholder="Likme (IP)" required>
+                    <button type="submit">Likt likmi</button>
+                </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>Reģionu ieņemšana</h2>
+    <table class="grid">
+        <tr><th>Reģions</th><th>Tur</th><th>Jūsu depozīts</th><th>Likt (×25 IP)</th></tr>
+        {% for r in regions %}
+        <tr>
+            <td>{{ r.name }}</td>
+            <td>{{ r.held_by.name if r.held_by else "neitrāls" }}</td>
+            <td>{{ '%.0f'|format(my_deposits.get(r.id, 0)) }}</td>
+            <td>
+                <form method="post" action="/regions/{{ r.id }}/deposit" class="inline">
+                    <input type="number" name="amount" min="25" step="25" placeholder="25" required>
+                    <button type="submit">+</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="muted small">Depozīts netiek atgriezts. Lielākais depozīts tur reģionu.</p>
+</section>
+
+<section class="card">
+    <h2>Finanšu vēsture</h2>
+    <table class="grid">
+        <tr><th>Izmaiņa</th><th>Iemesls</th><th>Atlikums</th></tr>
+        {% for e in ledger %}
+        <tr>
+            <td class="{{ 'pos' if e.delta >= 0 else 'neg' }}">{{ '%+.1f'|format(e.delta) }}</td>
+            <td>{{ e.reason }}</td>
+            <td>{{ '%.1f'|format(e.balance_after) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="muted">Vēl nav ierakstu.</td></tr>
+        {% endfor %}
+    </table>
+</section>
+
+<script src="/static/app.js"></script>
+{% endblock %}

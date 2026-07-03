@@ -1,0 +1,6 @@
+# Replace ":80" with your domain (e.g. game.example.com) once DNS points at the VM.
+# With a real domain, Caddy fetches + renews HTTPS certs automatically.
+:80 {
+	# Proxy everything (including WebSockets — Caddy handles the upgrade) to the app.
+	reverse_proxy app:8000
+}

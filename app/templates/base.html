@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}San Andrejsala{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+    <a class="brand" href="/">San Andrejsala</a>
+    {% if team %}
+    <nav>
+        <span class="who">{{ team.name }}</span>
+        <a href="/logout">Iziet</a>
+    </nav>
+    {% endif %}
+</header>
+<main class="wrap">
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>
