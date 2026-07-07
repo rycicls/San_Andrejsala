@@ -71,8 +71,27 @@ Then from your Mac:
 It rsyncs the repo up and runs `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
 Caddy fetches HTTPS certs automatically.
 
-## What's deferred to v2 (do manually via admin for now)
+## V2 mechanics (implemented)
 
-- Region-capture passive income (holder earns a share of region tax per team present)
-- "Steal" challenges (% of capital swing between teams)
-- Automatic daily challenge draws + key-task first-blood 50 IP bonus
+- **Region-capture passive income** — a region's holder earns `base_tax * region_tax`
+  per team present in that region, per minute (rule 3.10). Folded into the live
+  balance as a net rate: if income beats decay, your balance *grows*. Shown on the
+  dashboard and pushed over the WebSocket.
+- **"Steal" challenges** — bet is a fixed % of your own capital; pick a target team;
+  on success you steal that same % of *their* current capital (rule 4.2). Seeded in
+  Rīga (20%) and Zemgale (15%).
+- **Admin-set challenges + key-task unlock** — admins **pre-assign** which
+  challenges are active for each day and region (author them in the admin panel,
+  then assign to a day). There is **no random draw**. Each region has a key task;
+  a team must complete it to (a) **see** that region's challenges, (b) bet on them,
+  and (c) place region-capture deposits there (rules 2.1, 3.1). The first team to
+  do a region's key task each day also gets +50 IP (`KEY_TASK_BONUS`, rule 2.3).
+
+> **Schema note:** V2 added columns/tables. Since v1 uses `create_all` (not
+> migrations), apply the new schema by recreating the DB volume:
+> `docker compose down -v && docker compose up --build` (re-seeds fresh).
+
+## Still deferred / senate-adjudicated
+
+- The "30 minutes in a region before betting" timing gate (rule 3.2)
+- Cross-day challenge visibility carry-over (rule 2.8)

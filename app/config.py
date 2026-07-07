@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     base_tax: float = 0.35
     start_ip: float = 400.0
     daily_ip: float = 100.0
+    key_task_bonus: float = 50.0  # rule 2.3: first team to do a region's key task each day
+    total_days: int = 3
 
     admin_username: str = "admin"
     admin_password: str = "admin"

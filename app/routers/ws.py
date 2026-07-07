@@ -1,8 +1,8 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
 
 from ..database import AsyncSessionLocal
 from ..game.economy import team_state
+from ..game.regions import income_for_team
 from ..models import GameState, Region, Team
 from ..ws_manager import manager
 
@@ -30,7 +30,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     if team.current_region_id
                     else None
                 )
-                await ws.send_json(team_state(team, region, gs))
+                income = await income_for_team(session, team)
+                await ws.send_json(team_state(team, region, gs, income))
         # Keep the socket open; we don't expect inbound messages in v1.
         while True:
             await ws.receive_text()

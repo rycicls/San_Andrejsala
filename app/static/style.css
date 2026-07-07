@@ -43,8 +43,18 @@ button {
 }
 button.ok { background: var(--pos); color: #06210f; }
 button.bad { background: var(--neg); color: #2a0808; }
-form.inline { display: inline-flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin: .2rem .4rem .2rem 0; }
+form.inline { display: inline-flex; gap: .4rem; align-items: flex-end; flex-wrap: wrap; margin: .2rem .4rem .2rem 0; }
 form.inline input, form.inline select { width: auto; margin-top: 0; }
+
+/* Labeled field group (label caption above its input), used in admin forms. */
+.field {
+    display: inline-flex; flex-direction: column; gap: .2rem; margin: 0;
+    font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em;
+}
+.field input, .field select { margin-top: 0; font-size: .9rem; text-transform: none; letter-spacing: 0; }
+.field .muted { text-transform: none; letter-spacing: 0; }
+.mt { margin-top: 1.3rem; }
+h3 { font-size: 1rem; margin: 0 0 .6rem; }
 
 .balance-card { text-align: center; }
 .balance-head { display: flex; justify-content: space-between; color: var(--muted); font-size: .9rem; }
@@ -56,6 +66,7 @@ form.inline input, form.inline select { width: auto; margin-top: 0; }
 .challenge.locked { opacity: .55; }
 .challenge-top { display: flex; justify-content: space-between; align-items: center; }
 .mult { color: var(--accent); font-weight: 700; }
+.mult.steal { color: var(--neg); }
 .done { color: var(--muted); }
 .pending { color: #e0b950; }
 
@@ -66,4 +77,4 @@ table.grid th { color: var(--muted); font-weight: 600; }
 .muted { color: var(--muted); }
 .small { font-size: .8rem; }
 .error { color: var(--neg); }
-.admin-controls { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.admin-controls { display: flex; gap: .6rem; align-items: flex-end; flex-wrap: wrap; }

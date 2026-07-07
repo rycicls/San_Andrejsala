@@ -1,8 +1,28 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Region, RegionDeposit
+from ..config import settings
+from ..models import Region, RegionDeposit, Team
+
+
+async def income_for_team(session: AsyncSession, team: Team) -> float:
+    """Region-capture income (IP/min) for a team, computed from the DB. Used by
+    request handlers; the engine tick computes the same thing from memory."""
+    held = list(
+        (
+            await session.execute(select(Region).where(Region.held_by_team_id == team.id))
+        ).scalars()
+    )
+    total = 0.0
+    for r in held:
+        present = await session.scalar(
+            select(func.count())
+            .select_from(Team)
+            .where(Team.current_region_id == r.id, Team.is_admin == False)  # noqa: E712
+        )
+        total += settings.base_tax * r.tax_rate * (present or 0)
+    return total
 
 
 async def get_deposit(session: AsyncSession, team_id: int, region_id: int) -> RegionDeposit:

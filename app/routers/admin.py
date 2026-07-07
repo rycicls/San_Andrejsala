@@ -1,11 +1,10 @@
 """Admin control panel actions. All form-post + redirect back to /admin."""
 
-import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +12,7 @@ from ..config import settings
 from ..database import get_session
 from ..deps import require_admin
 from ..game.economy import apply_delta, settle
+from ..game.regions import income_for_team
 from ..models import (
     Challenge,
     ChallengeAttempt,
@@ -24,8 +24,6 @@ from ..models import (
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 
-DRAW_COUNT = 4  # rule 2.5: 4 random tasks per region per day
-
 
 def _back() -> RedirectResponse:
     return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
@@ -33,7 +31,8 @@ def _back() -> RedirectResponse:
 
 async def _settle(session: AsyncSession, team: Team, gs: GameState) -> None:
     region = await session.get(Region, team.current_region_id) if team.current_region_id else None
-    settle(team, region, gs.running)
+    income = await income_for_team(session, team)
+    settle(team, region, gs.running, income)
 
 
 @router.post("/game")
@@ -59,6 +58,8 @@ async def toggle_game(action: str = Form(...), session: AsyncSession = Depends(g
 async def next_day(session: AsyncSession = Depends(get_session)):
     """Advance the day and grant every team the daily IP (rule 3)."""
     gs = await session.get(GameState, 1)
+    if gs.current_day >= settings.total_days:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Spēlei ir tikai {settings.total_days} dienas")
     gs.current_day += 1
     for team in (
         await session.execute(select(Team).where(Team.is_admin == False))  # noqa: E712
@@ -102,35 +103,74 @@ async def set_team_region(
     return _back()
 
 
-@router.post("/draw")
-async def draw_challenges(region_id: int = Form(...), session: AsyncSession = Depends(get_session)):
-    """Draw up to 4 random challenge cards for a region on the current day.
-    Idempotent per (day, region): clears any previous draw first."""
-    gs = await session.get(GameState, 1)
-    pool = list(
-        (
-            await session.execute(select(Challenge).where(Challenge.region_id == region_id))
-        ).scalars()
+@router.post("/challenges/create")
+async def create_challenge(
+    region_id: int = Form(...),
+    title: str = Form(...),
+    description: str = Form(""),
+    kind: str = Form("normal"),  # normal | steal
+    multiplier: float = Form(2.0),
+    steal_pct: float = Form(0.0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Author a new challenge definition in a region's pool (not yet on any day)."""
+    if not await session.get(Region, region_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such region")
+    session.add(
+        Challenge(
+            region_id=region_id,
+            title=title,
+            description=description,
+            kind="steal" if kind == "steal" else "normal",
+            multiplier=multiplier,
+            steal_pct=steal_pct if kind == "steal" else 0.0,
+        )
     )
-    if not pool:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No challenges in this region's pool")
+    await session.commit()
+    return _back()
 
-    # remove existing draw for this day+region
-    for dc in (
-        await session.execute(
-            select(DailyChallenge).where(
-                DailyChallenge.game_day == gs.current_day,
-                DailyChallenge.region_id == region_id,
+
+@router.post("/daily/assign")
+async def assign_daily(
+    challenge_id: int = Form(...),
+    game_day: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Put a challenge on a specific day for its region (admins pre-set these)."""
+    challenge = await session.get(Challenge, challenge_id)
+    if challenge is None or challenge.is_key:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Pick a normal/steal challenge")
+    existing = await session.scalar(
+        select(DailyChallenge).where(
+            DailyChallenge.game_day == game_day,
+            DailyChallenge.region_id == challenge.region_id,
+            DailyChallenge.challenge_id == challenge_id,
+        )
+    )
+    if existing is None:
+        session.add(
+            DailyChallenge(
+                game_day=game_day, region_id=challenge.region_id, challenge_id=challenge_id
             )
         )
-    ).scalars():
-        await session.delete(dc)
+    await session.commit()
+    return _back()
 
-    picks = random.sample(pool, min(DRAW_COUNT, len(pool)))
-    for ch in picks:
-        session.add(
-            DailyChallenge(game_day=gs.current_day, region_id=region_id, challenge_id=ch.id)
-        )
+
+@router.post("/daily/{daily_id}/remove")
+async def remove_daily(daily_id: int, session: AsyncSession = Depends(get_session)):
+    """Un-assign a challenge from a day. Blocked once a team has bet on it."""
+    daily = await session.get(DailyChallenge, daily_id)
+    if daily is None:
+        return _back()
+    has_bet = await session.scalar(
+        select(func.count())
+        .select_from(ChallengeAttempt)
+        .where(ChallengeAttempt.daily_challenge_id == daily_id)
+    )
+    if has_bet:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Teams have already bet on this challenge")
+    await session.delete(daily)
     await session.commit()
     return _back()
 
@@ -153,9 +193,19 @@ async def resolve_attempt(
 
     if attempt.status == "success":
         challenge = await session.get(Challenge, daily.challenge_id)
-        payout = attempt.bet * challenge.multiplier  # bet returned WITH the multiplier
         await _settle(session, team, gs)
-        apply_delta(session, team, payout, f"Challenge win x{challenge.multiplier}")
+        if challenge.kind == "steal" and attempt.target_team_id:
+            # refund the stake, then steal the same % of the target's current capital
+            apply_delta(session, team, attempt.bet, "Steal stake returned")
+            target = await session.get(Team, attempt.target_team_id)
+            if target is not None:
+                await _settle(session, target, gs)
+                stolen = round(challenge.steal_pct * target.ip_balance, 2)
+                apply_delta(session, target, -stolen, f"Robbed by {team.name}")
+                apply_delta(session, team, stolen, f"Stole from {target.name}")
+        else:
+            payout = attempt.bet * challenge.multiplier  # bet returned WITH the multiplier
+            apply_delta(session, team, payout, f"Challenge win x{challenge.multiplier}")
         # rule 4.8: once completed it locks for everyone that day
         daily.locked = True
         daily.completed_by_team_id = team.id

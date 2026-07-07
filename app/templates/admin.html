@@ -53,14 +53,119 @@
 </section>
 
 <section class="card">
-    <h2>Izlozēt dienas izaicinājumus</h2>
-    <p class="muted small">Izlozē 4 nejaušus izaicinājumus reģionam uz šo dienu (pārraksta iepriekšējo izlozi).</p>
-    {% for r in regions %}
-    <form method="post" action="/admin/draw" class="inline">
-        <input type="hidden" name="region_id" value="{{ r.id }}">
-        <button type="submit">Izlozēt: {{ r.name }}</button>
+    <h2>Izveidot izaicinājumu</h2>
+    <p class="muted small">Pievieno jaunu izaicinājumu reģiona kopai. Pēc tam piešķir to dienai zemāk.</p>
+    <form method="post" action="/admin/challenges/create">
+        <div class="admin-controls">
+            <label class="field">Reģions
+                <select name="region_id" required>
+                    {% for r in regions %}<option value="{{ r.id }}">{{ r.name }}</option>{% endfor %}
+                </select>
+            </label>
+            <label class="field">Nosaukums
+                <input type="text" name="title" required style="min-width:14rem">
+            </label>
+            <label class="field">Tips
+                <select name="kind">
+                    <option value="normal">normāls</option>
+                    <option value="steal">steal</option>
+                </select>
+            </label>
+            <label class="field">Reizinātājs <span class="muted">(normālam)</span>
+                <select name="multiplier">
+                    {% for m in [1.5, 2.0, 2.5, 3.0, 3.5, 4.0] %}
+                    <option value="{{ m }}" {{ "selected" if m == 2.0 else "" }}>x{{ '%.1f'|format(m) }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="field">Steal daļa <span class="muted">(steal)</span>
+                <select name="steal_pct">
+                    {% for p in [30, 35, 40, 45, 50] %}
+                    <option value="{{ '%.2f'|format(p/100) }}">{{ p }}%</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit">Izveidot</button>
+        </div>
+        <input type="text" name="description" placeholder="Apraksts" style="width:100%;margin-top:.5rem">
+        <p class="muted small">
+            <b>Reizinātājs</b>: normālam uzdevumam likme tiek atgriezta ×šo skaitli, ja izpilda (1.5–4.0).
+            <b>Steal daļa</b>: steal uzdevumam likme = šī daļa no komandas kapitāla (30–50%); nevajadzīgo lauku atstāj kā ir.
+        </p>
     </form>
-    {% endfor %}
+</section>
+
+<section class="card">
+    <h2>Piešķirt izaicinājumu dienai</h2>
+    <p class="muted small">Admini paši nosaka, kuri izaicinājumi pieejami katrā reģionā un dienā.</p>
+    <form method="post" action="/admin/daily/assign" class="inline">
+        <label class="field">Izaicinājums
+            <select name="challenge_id" required style="min-width:20rem">
+                {% for a in assignable %}
+                <option value="{{ a.challenge.id }}">
+                    {{ a.region.name if a.region else "?" }} — {{ a.challenge.title }}
+                    {% if a.challenge.kind == 'steal' %}(steal {{ (a.challenge.steal_pct*100)|int }}%){% else %}(x{{ '%.1f'|format(a.challenge.multiplier) }}){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="field">Diena
+            <select name="game_day">
+                {% for d in range(1, total_days + 1) %}
+                <option value="{{ d }}" {{ "selected" if d == gs.current_day else "" }}>{{ d }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Piešķirt</button>
+    </form>
+
+    <h3 class="mt">Piešķirtie izaicinājumi</h3>
+    <form method="get" action="/admin" class="inline">
+        <label class="field">Filtrēt reģionu
+            <select name="f_region">
+                <option value="">— visi —</option>
+                {% for r in regions %}
+                <option value="{{ r.id }}" {{ "selected" if filter_region == r.id else "" }}>{{ r.name }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="field">Filtrēt dienu
+            <select name="f_day">
+                <option value="">— visi —</option>
+                {% for d in range(1, total_days + 1) %}
+                <option value="{{ d }}" {{ "selected" if filter_day == d else "" }}>{{ d }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Filtrēt</button>
+        {% if filter_region is not none or filter_day is not none %}
+        <a href="/admin" class="muted small">Rādīt visu</a>
+        {% endif %}
+    </form>
+
+    <table class="grid" style="margin-top:.6rem">
+        <tr><th>Diena</th><th>Reģions</th><th>Izaicinājums</th><th></th></tr>
+        {% for a in assigned %}
+        <tr>
+            <td>{{ a.daily.game_day }}</td>
+            <td>{{ a.region.name if a.region else "?" }}</td>
+            <td>{{ a.challenge.title }}
+                {% if a.challenge.kind == 'steal' %}<span class="muted small">steal {{ (a.challenge.steal_pct*100)|int }}%</span>{% endif %}
+            </td>
+            <td>
+                {% if a.has_bets %}
+                    <span class="muted small">ir likmes</span>
+                {% else %}
+                    <form method="post" action="/admin/daily/{{ a.daily.id }}/remove" class="inline">
+                        <button type="submit" class="bad">×</button>
+                    </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">Vēl nav piešķirtu izaicinājumu.</td></tr>
+        {% endfor %}
+    </table>
 </section>
 
 <section class="card">
@@ -71,7 +176,11 @@
         <tr>
             <td>{{ p.team.name }}</td>
             <td>{{ p.challenge.title if p.challenge else "?" }}
-                <span class="muted small">x{{ '%.2f'|format(p.challenge.multiplier) if p.challenge else "" }}</span>
+                {% if p.challenge and p.challenge.kind == 'steal' %}
+                    <span class="muted small">STEAL {{ (p.challenge.steal_pct*100)|int }}% → {{ p.target.name if p.target else "?" }}</span>
+                {% else %}
+                    <span class="muted small">x{{ '%.2f'|format(p.challenge.multiplier) if p.challenge else "" }}</span>
+                {% endif %}
             </td>
             <td>{{ '%.0f'|format(p.attempt.bet) }}</td>
             <td>

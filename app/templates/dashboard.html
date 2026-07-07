@@ -7,13 +7,16 @@
         <span>Ietekmes punkti (IP)</span>
         <span class="pill" id="status">{{ "SPĒLE IET" if gs.running else "PAUZĒTS" }}</span>
     </div>
-    <div class="balance" id="balance" data-rate="{{ '%.4f'|format(rate) }}" data-running="{{ 1 if gs.running else 0 }}">
+    <div class="balance" id="balance" data-rate="{{ '%.4f'|format(net_rate) }}" data-running="{{ 1 if gs.running else 0 }}">
         {{ '%.1f'|format(team.ip_balance) }}
     </div>
     <div class="balance-sub">
-        Zūd <b id="rate">{{ '%.3f'|format(rate) }}</b> IP/min
+        Neto <b id="rate">{{ '%.3f'|format(net_rate) }}</b> IP/min
         · Diena <b>{{ gs.current_day }}</b>
         · Reģions: <b>{{ region.name if region else "—" }}</b>
+    </div>
+    <div class="balance-sub small" id="incomeline" style="{{ '' if income > 0 else 'display:none' }}">
+        Reģionu ienākumi: <span class="pos">+<span id="income">{{ '%.3f'|format(income) }}</span></span> IP/min
     </div>
 </section>
 
@@ -32,24 +35,65 @@
     </form>
 </section>
 
+{% if region %}
+<section class="card">
+    <h2>Atslēgas uzdevums — {{ region.name }}</h2>
+    {% if key_challenge %}
+    <div class="challenge">
+        <div class="challenge-top">
+            <b>{{ key_challenge.title }}</b>
+            {% if region.id in unlocked_region_ids %}<span class="pill">atslēgts ✓</span>{% endif %}
+        </div>
+        <p class="muted">{{ key_challenge.description }}</p>
+        {% if day_unlocked %}
+            <p class="muted small">Šodien reģions jau atslēgts — izaicinājumi ir izlozēti.</p>
+        {% endif %}
+        <form method="post" action="/key-task" class="inline">
+            <button type="submit">Izpildīt atslēgas uzdevumu</button>
+        </form>
+        <p class="muted small">Pirmā komanda dienā saņem bonusu un izlozē dienas izaicinājumus.
+            Jāizpilda, lai varētu likt likmes uz reģiona ieņemšanu.</p>
+    </div>
+    {% else %}
+    <p class="muted">Šim reģionam nav atslēgas uzdevuma.</p>
+    {% endif %}
+</section>
+{% endif %}
+
 <section class="card">
     <h2>Izaicinājumi {% if region %}— {{ region.name }}{% endif %}</h2>
     {% if not region %}
         <p class="muted">Iestatiet reģionu, lai redzētu dienas izaicinājumus.</p>
+    {% elif not region_unlocked %}
+        <p class="muted">🔒 Izpildiet atslēgas uzdevumu, lai redzētu šī reģiona izaicinājumus.</p>
     {% elif not dailies %}
-        <p class="muted">Šai dienai šim reģionam vēl nav izlozēti izaicinājumi.</p>
+        <p class="muted">Šai dienai šim reģionam vēl nav iestatīti izaicinājumi.</p>
     {% else %}
         {% for d in dailies %}
         <div class="challenge {{ 'locked' if d.daily.locked else '' }}">
             <div class="challenge-top">
                 <b>{{ d.challenge.title }}</b>
-                <span class="mult">x{{ '%.2f'|format(d.challenge.multiplier) }}</span>
+                {% if d.challenge.kind == 'steal' %}
+                    <span class="mult steal">STEAL {{ (d.challenge.steal_pct*100)|int }}%</span>
+                {% else %}
+                    <span class="mult">x{{ '%.2f'|format(d.challenge.multiplier) }}</span>
+                {% endif %}
             </div>
             <p class="muted">{{ d.challenge.description }}</p>
             {% if d.daily.locked %}
                 <p class="done">Izpildīts — vairs nav pieejams šodien.</p>
             {% elif d.attempt %}
                 <p class="pending">Jūsu likme: {{ '%.0f'|format(d.attempt.bet) }} IP — statuss: {{ d.attempt.status }}</p>
+            {% elif d.challenge.kind == 'steal' %}
+                <form method="post" action="/challenges/{{ d.daily.id }}/bet" class="inline">
+                    <select name="target_team_id" required>
+                        <option value="">— pret kuru komandu? —</option>
+                        {% for t in other_teams %}
+                        <option value="{{ t.id }}">{{ t.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Zagt ({{ (d.challenge.steal_pct*100)|int }}% no kapitāla)</button>
+                </form>
             {% else %}
                 <form method="post" action="/challenges/{{ d.daily.id }}/bet" class="inline">
                     <input type="number" name="amount" min="1" step="1" placeholder="Likme (IP)" required>
@@ -71,15 +115,20 @@
             <td>{{ r.held_by.name if r.held_by else "neitrāls" }}</td>
             <td>{{ '%.0f'|format(my_deposits.get(r.id, 0)) }}</td>
             <td>
+                {% if r.id in unlocked_region_ids %}
                 <form method="post" action="/regions/{{ r.id }}/deposit" class="inline">
                     <input type="number" name="amount" min="25" step="25" placeholder="25" required>
                     <button type="submit">+</button>
                 </form>
+                {% else %}
+                <span class="muted small">🔒 vispirms atslēgas uzdevums</span>
+                {% endif %}
             </td>
         </tr>
         {% endfor %}
     </table>
-    <p class="muted small">Depozīts netiek atgriezts. Lielākais depozīts tur reģionu.</p>
+    <p class="muted small">Depozīts netiek atgriezts. Lielākais depozīts tur reģionu.
+        Turētājs nopelna reģiona nodokli par katru komandu, kas tur atrodas.</p>
 </section>
 
 <section class="card">

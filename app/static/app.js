@@ -5,18 +5,21 @@
     if (!el) return;
     const rateEl = document.getElementById("rate");
     const statusEl = document.getElementById("status");
+    const incomeEl = document.getElementById("income");
+    const incomeLine = document.getElementById("incomeline");
 
     let balance = parseFloat(el.textContent) || 0;
-    let rate = parseFloat(el.dataset.rate) || 0;      // IP per minute
+    let rate = parseFloat(el.dataset.rate) || 0;      // NET IP per minute (may be negative)
     let running = el.dataset.running === "1";
 
     function render() {
         el.textContent = balance.toFixed(1);
     }
 
-    // Local smoothing: decrement every 200ms so the number visibly ticks down.
+    // Local smoothing: apply the net rate every 200ms so the number ticks live.
+    // Net can be negative (region income > decay), in which case the balance grows.
     setInterval(function () {
-        if (running && balance > 0) {
+        if (running) {
             balance = Math.max(0, balance - rate * (0.2 / 60));
             render();
         }
@@ -30,11 +33,15 @@
             const msg = JSON.parse(ev.data);
             if (msg.type !== "state") return;
             balance = msg.balance;              // resync to server truth
-            rate = msg.rate;
+            rate = msg.rate;                    // net (decay - income)
             running = msg.running;
             render();
             if (rateEl) rateEl.textContent = rate.toFixed(3);
             if (statusEl) statusEl.textContent = running ? "SPĒLE IET" : "PAUZĒTS";
+            if (incomeEl && incomeLine) {
+                incomeEl.textContent = (msg.income || 0).toFixed(3);
+                incomeLine.style.display = (msg.income || 0) > 0 ? "" : "none";
+            }
         };
 
         // Reconnect if the socket drops (server restart, flaky wifi in the field).

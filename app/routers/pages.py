@@ -3,13 +3,15 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..database import get_session
 from ..deps import current_team
+from ..game.regions import income_for_team
 from ..game.taxes import compute_rate
 from ..models import (
     Challenge,
@@ -18,8 +20,10 @@ from ..models import (
     GameState,
     LedgerEntry,
     Region,
+    RegionDayUnlock,
     RegionDeposit,
     Team,
+    TeamKeyUnlock,
 )
 from ..security import verify_password
 
@@ -84,11 +88,51 @@ async def dashboard(
         ).scalars()
     )
     region = next((r for r in regions if r.id == team.current_region_id), None)
-    rate = compute_rate(team.ip_balance, region.tax_rate if region else 0.0)
+    decay = compute_rate(team.ip_balance, region.tax_rate if region else 0.0)
+    income = await income_for_team(session, team)
 
-    # Daily cards for this team's region + day, with the team's attempt (if any).
-    dailies = []
+    # regions this team has unlocked (key task done) → gates capture betting
+    unlocked_region_ids = set(
+        (
+            await session.execute(
+                select(TeamKeyUnlock.region_id).where(TeamKeyUnlock.team_id == team.id)
+            )
+        ).scalars()
+    )
+
+    # the current region's key task + whether the day's draw has happened
+    key_challenge = None
+    day_unlocked = False
     if region is not None:
+        key_challenge = await session.scalar(
+            select(Challenge).where(
+                Challenge.region_id == region.id, Challenge.is_key == True  # noqa: E712
+            )
+        )
+        day_unlocked = (
+            await session.scalar(
+                select(RegionDayUnlock).where(
+                    RegionDayUnlock.game_day == gs.current_day,
+                    RegionDayUnlock.region_id == region.id,
+                )
+            )
+        ) is not None
+
+    # other teams (steal targets)
+    other_teams = list(
+        (
+            await session.execute(
+                select(Team)
+                .where(Team.is_admin == False, Team.id != team.id)  # noqa: E712
+                .order_by(Team.name)
+            )
+        ).scalars()
+    )
+
+    # Daily cards — only visible once THIS team has done the region's key task.
+    region_unlocked = region is not None and region.id in unlocked_region_ids
+    dailies = []
+    if region_unlocked:
         rows = list(
             (
                 await session.execute(
@@ -138,17 +182,33 @@ async def dashboard(
             "gs": gs,
             "region": region,
             "regions": regions,
-            "rate": rate,
+            "decay": decay,
+            "income": income,
+            "net_rate": decay - income,
             "dailies": dailies,
             "my_deposits": my_deposits,
             "ledger": ledger,
+            "key_challenge": key_challenge,
+            "day_unlocked": day_unlocked,
+            "region_unlocked": region_unlocked,
+            "unlocked_region_ids": unlocked_region_ids,
+            "other_teams": other_teams,
         },
     )
+
+
+def _to_int(v: str | None) -> int | None:
+    try:
+        return int(v) if v not in (None, "") else None
+    except ValueError:
+        return None
 
 
 @router.get("/admin")
 async def admin_page(
     request: Request,
+    f_region: str | None = None,
+    f_day: str | None = None,
     team: Team | None = Depends(current_team),
     session: AsyncSession = Depends(get_session),
 ):
@@ -156,6 +216,9 @@ async def admin_page(
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     if not team.is_admin:
         return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+
+    filter_region = _to_int(f_region)  # None = all
+    filter_day = _to_int(f_day)
 
     gs = await session.get(GameState, 1)
     regions = list((await session.execute(select(Region).order_by(Region.name))).scalars())
@@ -181,11 +244,51 @@ async def admin_page(
     for a in pending_rows:
         daily = await session.get(DailyChallenge, a.daily_challenge_id)
         challenge = await session.get(Challenge, daily.challenge_id) if daily else None
+        target = await session.get(Team, a.target_team_id) if a.target_team_id else None
         pending.append(
             {
                 "attempt": a,
                 "team": await session.get(Team, a.team_id),
                 "challenge": challenge,
+                "target": target,
+            }
+        )
+
+    # pool of challenges admins can assign to a day (non-key), grouped by region
+    assignable = [
+        {"challenge": c, "region": region_by_id.get(c.region_id)}
+        for c in (
+            await session.execute(
+                select(Challenge)
+                .where(Challenge.is_key == False)  # noqa: E712
+                .order_by(Challenge.region_id, Challenge.title)
+            )
+        ).scalars()
+    ]
+
+    # current day→region challenge assignments (optionally filtered)
+    assigned_q = (
+        select(DailyChallenge)
+        .options(selectinload(DailyChallenge.challenge))
+        .order_by(DailyChallenge.game_day, DailyChallenge.region_id, DailyChallenge.id)
+    )
+    if filter_region is not None:
+        assigned_q = assigned_q.where(DailyChallenge.region_id == filter_region)
+    if filter_day is not None:
+        assigned_q = assigned_q.where(DailyChallenge.game_day == filter_day)
+    assigned = []
+    for dc in (await session.execute(assigned_q)).scalars():
+        n_bets = await session.scalar(
+            select(func.count())
+            .select_from(ChallengeAttempt)
+            .where(ChallengeAttempt.daily_challenge_id == dc.id)
+        )
+        assigned.append(
+            {
+                "daily": dc,
+                "challenge": dc.challenge,
+                "region": region_by_id.get(dc.region_id),
+                "has_bets": bool(n_bets),
             }
         )
 
@@ -199,5 +302,10 @@ async def admin_page(
             "region_by_id": region_by_id,
             "teams": teams,
             "pending": pending,
+            "assignable": assignable,
+            "assigned": assigned,
+            "filter_region": filter_region,
+            "filter_day": filter_day,
+            "total_days": settings.total_days,
         },
     )

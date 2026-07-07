@@ -1,6 +1,15 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -51,7 +60,11 @@ class Challenge(Base):
     title: Mapped[str] = mapped_column(String(160))
     description: Mapped[str] = mapped_column(Text, default="")
     multiplier: Mapped[float] = mapped_column(Float, default=2.0)
-    kind: Mapped[str] = mapped_column(String(20), default="normal")  # normal | steal (v2)
+    kind: Mapped[str] = mapped_column(String(20), default="normal")  # normal | steal
+    # steal: bet = steal_pct of your capital; on success steal that % of a target's capital
+    steal_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    # the region's key task (rule 2): first team to do it each day gets a bonus + triggers the draw
+    is_key: Mapped[bool] = mapped_column(Boolean, default=False)
 
     region: Mapped[Region] = relationship()
 
@@ -85,10 +98,13 @@ class ChallengeAttempt(Base):
     daily_challenge_id: Mapped[int] = mapped_column(ForeignKey("daily_challenges.id"))
     bet: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | success | fail
+    # for steal challenges: which team we're trying to steal from
+    target_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    team: Mapped[Team] = relationship()
+    team: Mapped[Team] = relationship(foreign_keys=[team_id])
+    target_team: Mapped["Team | None"] = relationship(foreign_keys=[target_team_id])
     daily_challenge: Mapped[DailyChallenge] = relationship()
 
 
@@ -118,6 +134,34 @@ class LedgerEntry(Base):
     reason: Mapped[str] = mapped_column(String(200))
     balance_after: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RegionDayUnlock(Base):
+    """Tracks, per region per day, the first team to complete the key task
+    (rule 2.3 first-blood bonus) and that the daily draw has been triggered."""
+
+    __tablename__ = "region_day_unlocks"
+    __table_args__ = (UniqueConstraint("game_day", "region_id", name="uq_regionday"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    game_day: Mapped[int] = mapped_column(Integer)
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    first_team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+
+    region: Mapped[Region] = relationship()
+    first_team: Mapped["Team | None"] = relationship()
+
+
+class TeamKeyUnlock(Base):
+    """A team has completed a region's key task at least once (rule 3.1 gate for
+    placing region-capture deposits). Persists across days."""
+
+    __tablename__ = "team_key_unlocks"
+    __table_args__ = (UniqueConstraint("team_id", "region_id", name="uq_teamkey"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
 
 
 class GameState(Base):
