@@ -68,18 +68,25 @@ is exposed (80/443); the app and Postgres are not reachable from the internet.
   domain — and team passwords are sent at login, so you want HTTPS.
 - Open the firewall for **22, 80, 443** (Hetzner Cloud Firewall or `ufw`).
 
-### 2. Install Docker on the VM
+Everything below runs **on the VM itself** — SSH in once, do all of this there.
+There's no rsync-from-Mac step; the VM pulls its own code from GitHub.
+
+### 2. Install Docker + clone the repo (once)
 ```bash
 ssh user@VM_IP
+
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker "$USER"   # log out/in so `docker` works without sudo
+
+git clone https://github.com/rycicls/San_Andrejsala.git andrejsala
+cd andrejsala
 ```
 
-### 3. Create the server-side `.env` (once)
-Secrets live only on the server; `deploy.sh` never overwrites this file.
+### 3. Create `.env` (once, on the VM)
+Secrets live only here — `git pull` / `deploy.sh` never touch this file.
 ```bash
-mkdir -p ~/andrejsala && cd ~/andrejsala
-# create .env — start from the example values, then CHANGE the marked ones:
+cp .env.example .env
+# edit .env — CHANGE the marked values:
 #   POSTGRES_PASSWORD  -> a strong password
 #   DATABASE_URL       -> same user/password/db
 #   SECRET_KEY         -> openssl rand -hex 32
@@ -88,23 +95,26 @@ mkdir -p ~/andrejsala && cd ~/andrejsala
 nano .env
 ```
 
-### 4. Deploy from your Mac
+### 4. Deploy (first time and every update, from the VM)
 ```bash
-./deploy.sh user@VM_IP
+./deploy.sh
 ```
-It rsyncs the code (excluding `.env`, `.git`, venvs, local DBs), then runs
+It `git pull`s the latest code, then runs
 `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
 On first boot the DB is created + seeded automatically; with a real `SITE_ADDRESS`
 domain, Caddy fetches HTTPS certs on its own.
 
+If you've made local edits on the VM you don't want overwritten by `git pull`,
+run `./deploy.sh --no-pull` instead — it deploys the working tree as-is.
+
 Open `https://your-domain` (or `http://VM_IP` if you left `SITE_ADDRESS=:80`).
 
-### Operating it
+### Operating it (also on the VM, from the `andrejsala` directory)
 ```bash
-ssh user@VM_IP 'cd andrejsala && docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f app'
-ssh user@VM_IP 'cd andrejsala && docker compose -f docker-compose.yml -f docker-compose.prod.yml ps'
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f app
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
 # reset everything (wipes the DB + re-seeds):
-ssh user@VM_IP 'cd andrejsala && docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v'
+docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v
 ```
 
 > **Note:** the admin password is only seeded on a *fresh* DB. To change it later
