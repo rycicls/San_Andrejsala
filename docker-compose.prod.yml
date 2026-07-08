@@ -2,11 +2,11 @@
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 services:
   app:
-    # No source bind-mount, no --reload in production. --proxy-headers makes the
-    # app trust Caddy's X-Forwarded-* so it sees the real client IP/scheme.
+    # No source bind-mount, no --reload, no published port in production — the
+    # base file no longer defines any of those (they live in
+    # docker-compose.override.yml, which isn't loaded here). --proxy-headers
+    # makes the app trust Caddy's X-Forwarded-* so it sees the real client IP.
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
-    volumes: []
-    ports: []   # not exposed directly; Caddy proxies to it
     restart: unless-stopped
 
   caddy:

@@ -1,0 +1,17 @@
+# Auto-loaded by `docker compose up` (no -f flags) alongside docker-compose.yml
+# — this is what gives local dev hot-reload and a reachable localhost:8000.
+#
+# NEVER loaded in production: the prod command passes -f explicitly
+# (`-f docker-compose.yml -f docker-compose.prod.yml`), and Compose only
+# auto-includes this file when no -f is given at all.
+services:
+  app:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # WATCHFILES_FORCE_POLLING: file-change events don't cross the macOS→Colima
+    # VM boundary, so the reloader must poll to notice your edits.
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - .:/code
+    ports:
+      - "8000:8000"
