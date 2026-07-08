@@ -12,12 +12,15 @@ from ..config import settings
 from ..database import get_session
 from ..deps import require_admin
 from ..game.economy import apply_delta, settle
-from ..game.regions import income_for_team
+from ..game.regions import income_for_team, reset_presence_on_move
+from ..security import hash_password
 from ..models import (
     Challenge,
     ChallengeAttempt,
     DailyChallenge,
     GameState,
+    JeopardyAttempt,
+    JeopardyChallenge,
     Region,
     Team,
 )
@@ -87,6 +90,34 @@ async def adjust_team(
     return _back()
 
 
+@router.post("/teams/{team_id}/credentials")
+async def update_team_credentials(
+    team_id: int,
+    name: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rename a team / change its login. Blank password keeps the current one."""
+    team = await session.get(Team, team_id)
+    if team is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such team")
+    name, username = name.strip(), username.strip()
+    if not name or not username:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Vārds un lietotājvārds ir obligāti")
+    clash = await session.scalar(
+        select(Team).where(Team.username == username, Team.id != team_id)
+    )
+    if clash is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Lietotājvārds jau aizņemts")
+    team.name = name
+    team.username = username
+    if password.strip():
+        team.password_hash = hash_password(password)
+    await session.commit()
+    return _back()
+
+
 @router.post("/teams/{team_id}/region")
 async def set_team_region(
     team_id: int,
@@ -98,6 +129,7 @@ async def set_team_region(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such team")
     gs = await session.get(GameState, 1)
     await _settle(session, team, gs)
+    await reset_presence_on_move(session, team, region_id or None)  # rule 3.2 timer resets
     team.current_region_id = region_id or None
     await session.commit()
     return _back()
@@ -188,6 +220,13 @@ async def resolve_attempt(
     daily = await session.get(DailyChallenge, attempt.daily_challenge_id)
     team = await session.get(Team, attempt.team_id)
 
+    # rule 4.8: only the first team completes a challenge — once it's locked by a
+    # winner, any remaining attempts can only be marked failed.
+    if result == "success" and daily.locked:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Šo izaicinājumu jau izpildīja cita komanda"
+        )
+
     attempt.status = "success" if result == "success" else "fail"
     attempt.resolved_at = datetime.now(timezone.utc)
 
@@ -196,18 +235,56 @@ async def resolve_attempt(
         await _settle(session, team, gs)
         if challenge.kind == "steal" and attempt.target_team_id:
             # refund the stake, then steal the same % of the target's current capital
-            apply_delta(session, team, attempt.bet, "Steal stake returned")
+            apply_delta(session, team, attempt.bet, f"Likme atgriezta: {challenge.title}")
             target = await session.get(Team, attempt.target_team_id)
             if target is not None:
                 await _settle(session, target, gs)
                 stolen = round(challenge.steal_pct * target.ip_balance, 2)
-                apply_delta(session, target, -stolen, f"Robbed by {team.name}")
-                apply_delta(session, team, stolen, f"Stole from {target.name}")
+                apply_delta(session, target, -stolen, f"Aplaupīts ({challenge.title}): {team.name}")
+                apply_delta(session, team, stolen, f"Nozagts no {target.name}: {challenge.title}")
         else:
             payout = attempt.bet * challenge.multiplier  # bet returned WITH the multiplier
-            apply_delta(session, team, payout, f"Challenge win x{challenge.multiplier}")
+            apply_delta(session, team, payout, f"Uzvara: {challenge.title} (x{challenge.multiplier})")
         # rule 4.8: once completed it locks for everyone that day
         daily.locked = True
         daily.completed_by_team_id = team.id
+    await session.commit()
+    return _back()
+
+
+@router.post("/jeopardy-challenge/{jc_id}/edit")
+async def edit_jeopardy_challenge(
+    jc_id: int,
+    title: str = Form(...),
+    description: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Edit the pre-authored challenge behind a Jeopardy value."""
+    jc = await session.get(JeopardyChallenge, jc_id)
+    if jc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such Jeopardy challenge")
+    jc.title = title
+    jc.description = description
+    await session.commit()
+    return _back()
+
+
+@router.post("/jeopardy/{attempt_id}/resolve")
+async def resolve_jeopardy(
+    attempt_id: int,
+    result: str = Form(...),  # success | fail
+    session: AsyncSession = Depends(get_session),
+):
+    """Resolve a broke team's Jeopardy card (rule 7): success grants its value."""
+    attempt = await session.get(JeopardyAttempt, attempt_id)
+    if attempt is None or attempt.status != "pending":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Attempt not pending")
+    gs = await session.get(GameState, 1)
+    team = await session.get(Team, attempt.team_id)
+    attempt.status = "success" if result == "success" else "fail"
+    attempt.resolved_at = datetime.now(timezone.utc)
+    if attempt.status == "success":
+        await _settle(session, team, gs)
+        apply_delta(session, team, attempt.value, f"Jeopardy {int(attempt.value)}")
     await session.commit()
     return _back()

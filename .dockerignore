@@ -1,0 +1,13 @@
+# Keep the image lean and — importantly — keep secrets out of it.
+.git
+.gitignore
+.env
+.venv
+venv
+__pycache__
+*.py[cod]
+*.db
+.DS_Store
+.claude
+README.md
+deploy.sh

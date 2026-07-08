@@ -7,9 +7,27 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..database import AsyncSessionLocal
-from ..models import GameState, Region, Team
+from ..models import GameState, Region, RegionPresence, Team
 from ..ws_manager import manager
 from .economy import income_per_min, settle, team_state
+
+
+async def _accumulate_presence(session, teams: list[Team]) -> None:
+    """Add this tick's elapsed time to each team's presence in its current
+    region (rule 3.2). Only called while the game is running."""
+    rows = {
+        (p.team_id, p.region_id): p
+        for p in (await session.execute(select(RegionPresence))).scalars()
+    }
+    for team in teams:
+        if not team.current_region_id:
+            continue
+        key = (team.id, team.current_region_id)
+        p = rows.get(key)
+        if p is None:
+            p = RegionPresence(team_id=team.id, region_id=team.current_region_id, seconds=0.0)
+            session.add(p)
+        p.seconds += settings.tick_seconds
 
 
 async def _tick() -> None:
@@ -31,6 +49,8 @@ async def _tick() -> None:
         for team in teams:
             region = regions.get(team.current_region_id)
             settle(team, region, gs.running, incomes[team.id])
+        if gs.running:
+            await _accumulate_presence(session, teams)
         await session.commit()
 
         for team in teams:

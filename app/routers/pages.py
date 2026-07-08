@@ -18,10 +18,13 @@ from ..models import (
     ChallengeAttempt,
     DailyChallenge,
     GameState,
+    JeopardyAttempt,
+    JeopardyChallenge,
     LedgerEntry,
     Region,
     RegionDayUnlock,
     RegionDeposit,
+    RegionPresence,
     Team,
     TeamKeyUnlock,
 )
@@ -163,6 +166,15 @@ async def dashboard(
             )
         ).scalars()
     }
+    # minutes spent in each region (rule 3.2 timer)
+    region_minutes = {
+        p.region_id: p.seconds / 60.0
+        for p in (
+            await session.execute(
+                select(RegionPresence).where(RegionPresence.team_id == team.id)
+            )
+        ).scalars()
+    }
     ledger = list(
         (
             await session.execute(
@@ -173,6 +185,23 @@ async def dashboard(
             )
         ).scalars()
     )
+    # Jeopardy (rule 7): available when broke; hide once a card is pending
+    jeopardy_pending = await session.scalar(
+        select(JeopardyAttempt).where(
+            JeopardyAttempt.team_id == team.id, JeopardyAttempt.status == "pending"
+        )
+    )
+    jeopardy_challenges = list(
+        (
+            await session.execute(select(JeopardyChallenge).order_by(JeopardyChallenge.value))
+        ).scalars()
+    )
+    # the pre-authored challenge behind the picked card (shown while pending)
+    jeopardy_current = None
+    if jeopardy_pending is not None:
+        jeopardy_current = next(
+            (jc for jc in jeopardy_challenges if jc.value == jeopardy_pending.value), None
+        )
 
     return templates.TemplateResponse(
         request,
@@ -187,7 +216,13 @@ async def dashboard(
             "net_rate": decay - income,
             "dailies": dailies,
             "my_deposits": my_deposits,
+            "region_minutes": region_minutes,
+            "region_min_minutes": settings.region_min_minutes,
             "ledger": ledger,
+            "broke": team.ip_balance <= 0,
+            "jeopardy_pending": jeopardy_pending,
+            "jeopardy_challenges": jeopardy_challenges,
+            "jeopardy_current": jeopardy_current,
             "key_challenge": key_challenge,
             "day_unlocked": day_unlocked,
             "region_unlocked": region_unlocked,
@@ -254,6 +289,32 @@ async def admin_page(
             }
         )
 
+    # editable Jeopardy challenges (one per value)
+    jeopardy_challenges = list(
+        (
+            await session.execute(select(JeopardyChallenge).order_by(JeopardyChallenge.value))
+        ).scalars()
+    )
+    jc_by_value = {jc.value: jc for jc in jeopardy_challenges}
+
+    # broke teams' pending Jeopardy cards awaiting a ruling
+    jeopardy = []
+    for a in (
+        await session.execute(
+            select(JeopardyAttempt)
+            .where(JeopardyAttempt.status == "pending")
+            .order_by(JeopardyAttempt.id)
+        )
+    ).scalars():
+        jc = jc_by_value.get(a.value)
+        jeopardy.append(
+            {
+                "attempt": a,
+                "team": await session.get(Team, a.team_id),
+                "challenge": jc,
+            }
+        )
+
     # pool of challenges admins can assign to a day (non-key), grouped by region
     assignable = [
         {"challenge": c, "region": region_by_id.get(c.region_id)}
@@ -302,6 +363,8 @@ async def admin_page(
             "region_by_id": region_by_id,
             "teams": teams,
             "pending": pending,
+            "jeopardy": jeopardy,
+            "jeopardy_challenges": jeopardy_challenges,
             "assignable": assignable,
             "assigned": assigned,
             "filter_region": filter_region,

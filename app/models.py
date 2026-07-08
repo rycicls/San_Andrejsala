@@ -154,7 +154,8 @@ class RegionDayUnlock(Base):
 
 class TeamKeyUnlock(Base):
     """A team has completed a region's key task at least once (rule 3.1 gate for
-    placing region-capture deposits). Persists across days."""
+    placing region-capture deposits). Persists across days — this is also what
+    makes challenges stay visible on later days (rule 2.8 carry-over)."""
 
     __tablename__ = "team_key_unlocks"
     __table_args__ = (UniqueConstraint("team_id", "region_id", name="uq_teamkey"),)
@@ -162,6 +163,47 @@ class TeamKeyUnlock(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
     region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+
+
+class JeopardyChallenge(Base):
+    """The pre-authored, harder challenge behind each Jeopardy value (100–500).
+    Difficulty scales with the IP reward. Admins edit these in the panel."""
+
+    __tablename__ = "jeopardy_challenges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    value: Mapped[float] = mapped_column(Float, unique=True)  # 100, 200, ... 500
+    title: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(Text, default="")
+
+
+class JeopardyAttempt(Base):
+    """Rule 7: a team that hits 0 IP can pick a Jeopardy card (100–500) to earn
+    IP back. Admin resolves it like a challenge (success grants the value)."""
+
+    __tablename__ = "jeopardy_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    value: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | success | fail
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    team: Mapped[Team] = relationship()
+
+
+class RegionPresence(Base):
+    """Accumulated time (seconds, while the game is running) a team has spent in
+    a region. Gates region-capture betting: rule 3.2 requires 30 min present."""
+
+    __tablename__ = "region_presence"
+    __table_args__ = (UniqueConstraint("team_id", "region_id", name="uq_presence"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    seconds: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class GameState(Base):

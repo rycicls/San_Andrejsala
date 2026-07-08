@@ -3,7 +3,35 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..models import Region, RegionDeposit, Team
+from ..models import Region, RegionDeposit, RegionPresence, Team
+
+
+async def presence_minutes(session: AsyncSession, team_id: int, region_id: int) -> float:
+    """How long (minutes) a team has been in a region — the rule 3.2 timer.
+    This is *continuous* presence in the current region; it resets on leaving."""
+    p = await session.scalar(
+        select(RegionPresence).where(
+            RegionPresence.team_id == team_id, RegionPresence.region_id == region_id
+        )
+    )
+    return (p.seconds / 60.0) if p else 0.0
+
+
+async def reset_presence_on_move(session: AsyncSession, team: Team, new_region_id: int | None) -> None:
+    """The rule 3.2 timer counts continuous presence, so switching regions wipes
+    it: zero out the region being left and (re)start the one being entered at 0."""
+    if team.current_region_id == new_region_id:
+        return  # not actually moving
+    for rid in {team.current_region_id, new_region_id}:
+        if not rid:
+            continue
+        p = await session.scalar(
+            select(RegionPresence).where(
+                RegionPresence.team_id == team.id, RegionPresence.region_id == rid
+            )
+        )
+        if p:
+            p.seconds = 0.0
 
 
 async def income_for_team(session: AsyncSession, team: Team) -> float:
@@ -19,7 +47,11 @@ async def income_for_team(session: AsyncSession, team: Team) -> float:
         present = await session.scalar(
             select(func.count())
             .select_from(Team)
-            .where(Team.current_region_id == r.id, Team.is_admin == False)  # noqa: E712
+            .where(
+                Team.current_region_id == r.id,
+                Team.is_admin == False,  # noqa: E712
+                Team.id != team.id,  # holder doesn't pay themselves (Monopoly rent)
+            )
         )
         total += settings.base_tax * r.tax_rate * (present or 0)
     return total

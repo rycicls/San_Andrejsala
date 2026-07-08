@@ -7,13 +7,18 @@
     const statusEl = document.getElementById("status");
     const incomeEl = document.getElementById("income");
     const incomeLine = document.getElementById("incomeline");
+    const jeopardy = document.getElementById("jeopardy");
 
     let balance = parseFloat(el.textContent) || 0;
     let rate = parseFloat(el.dataset.rate) || 0;      // NET IP per minute (may be negative)
     let running = el.dataset.running === "1";
+    let jeopardyPending = jeopardy ? jeopardy.dataset.pending === "1" : false;
 
     function render() {
         el.textContent = balance.toFixed(1);
+        // Reveal the Jeopardy comeback panel the moment a team hits 0 IP.
+        // (Once a card is pending, keep it shown until the server re-renders.)
+        if (jeopardy) jeopardy.style.display = (balance <= 0 || jeopardyPending) ? "" : "none";
     }
 
     // Local smoothing: apply the net rate every 200ms so the number ticks live.

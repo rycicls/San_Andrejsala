@@ -67,6 +67,10 @@ h3 { font-size: 1rem; margin: 0 0 .6rem; }
 .challenge-top { display: flex; justify-content: space-between; align-items: center; }
 .mult { color: var(--accent); font-weight: 700; }
 .mult.steal { color: var(--neg); }
+.jeopardy-card { border-color: #e0b950; }
+.jeopardy-cards { display: flex; gap: .6rem; flex-wrap: wrap; }
+.jeopardy-cards form { margin: 0; width: 6rem; }
+.jeopardy-cards button { width: 100%; padding: .9rem 0; font-size: 1.2rem; background: #e0b950; color: #2a2205; }
 .done { color: var(--muted); }
 .pending { color: #e0b950; }
 

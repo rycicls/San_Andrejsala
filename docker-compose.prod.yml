@@ -2,14 +2,18 @@
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 services:
   app:
-    # No source bind-mount, no --reload in production.
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # No source bind-mount, no --reload in production. --proxy-headers makes the
+    # app trust Caddy's X-Forwarded-* so it sees the real client IP/scheme.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
     volumes: []
     ports: []   # not exposed directly; Caddy proxies to it
     restart: unless-stopped
 
   caddy:
     image: caddy:2
+    environment:
+      # Set SITE_ADDRESS in .env to your domain to enable automatic HTTPS.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     depends_on:
       - app
     ports:

@@ -4,18 +4,26 @@ dashboard (Post/Redirect/Get) so the site works without any JS framework."""
 from fastapi import APIRouter, Depends, Form, HTTPException, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database import get_session
 from ..deps import require_team
 from ..game.economy import apply_delta, settle
-from ..game.regions import get_deposit, income_for_team, recompute_holder
+from ..game.regions import (
+    get_deposit,
+    income_for_team,
+    presence_minutes,
+    recompute_holder,
+    reset_presence_on_move,
+)
 from ..models import (
     Challenge,
     ChallengeAttempt,
     DailyChallenge,
     GameState,
+    JeopardyAttempt,
     Region,
     RegionDayUnlock,
     Team,
@@ -25,6 +33,7 @@ from ..models import (
 router = APIRouter()
 
 MIN_DEPOSIT_STEP = 25.0
+JEOPARDY_VALUES = (100.0, 200.0, 300.0, 400.0, 500.0)
 
 
 def _back() -> RedirectResponse:
@@ -46,6 +55,7 @@ async def set_region(
     session: AsyncSession = Depends(get_session),
 ):
     await _settle_team(session, team)  # freeze decay under old region first
+    await reset_presence_on_move(session, team, region_id or None)  # rule 3.2 timer resets
     team.current_region_id = region_id or None
     await session.commit()
     return _back()
@@ -72,16 +82,22 @@ async def complete_key_task(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This region has no key task")
     gs = await session.get(GameState, 1)
 
-    # persistent per-team unlock (capture-betting gate)
+    # persistent per-team unlock (capture-betting gate). Savepoint + catch makes
+    # a double-click / concurrent submit a harmless no-op instead of a 500.
     already = await session.scalar(
         select(TeamKeyUnlock).where(
             TeamKeyUnlock.team_id == team.id, TeamKeyUnlock.region_id == region_id
         )
     )
     if already is None:
-        session.add(TeamKeyUnlock(team_id=team.id, region_id=region_id))
+        try:
+            async with session.begin_nested():
+                session.add(TeamKeyUnlock(team_id=team.id, region_id=region_id))
+        except IntegrityError:
+            pass  # another request unlocked it first
 
-    # first team this day → bonus + trigger the draw
+    # first team this day → first-blood bonus. Claim atomically: if two teams
+    # race, only one insert of RegionDayUnlock(day, region) wins; the loser skips.
     day_unlock = await session.scalar(
         select(RegionDayUnlock).where(
             RegionDayUnlock.game_day == gs.current_day,
@@ -89,13 +105,21 @@ async def complete_key_task(
         )
     )
     if day_unlock is None:
-        session.add(
-            RegionDayUnlock(
-                game_day=gs.current_day, region_id=region_id, first_team_id=team.id
+        claimed = True
+        try:
+            async with session.begin_nested():
+                session.add(
+                    RegionDayUnlock(
+                        game_day=gs.current_day, region_id=region_id, first_team_id=team.id
+                    )
+                )
+        except IntegrityError:
+            claimed = False  # another team took first-blood
+        if claimed:
+            await _settle_team(session, team)
+            apply_delta(
+                session, team, settings.key_task_bonus, f"Key task first-blood ({region.name})"
             )
-        )
-        await _settle_team(session, team)
-        apply_delta(session, team, settings.key_task_bonus, f"Key task first-blood ({region.name})")
 
     await session.commit()
     return _back()
@@ -120,6 +144,14 @@ async def bet_challenge(
     )
     if unlocked is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Complete the region's key task first")
+    # rule 4.7: one bet per challenge — no double-betting (also stops double-submits)
+    prior = await session.scalar(
+        select(ChallengeAttempt).where(
+            ChallengeAttempt.team_id == team.id, ChallengeAttempt.daily_challenge_id == daily.id
+        )
+    )
+    if prior is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Jūs jau esat likuši likmi uz šo izaicinājumu")
     challenge = await session.get(Challenge, daily.challenge_id)
     await _settle_team(session, team)
 
@@ -133,7 +165,7 @@ async def bet_challenge(
         bet = round(challenge.steal_pct * team.ip_balance, 2)
         if bet <= 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "No capital to stake")
-        apply_delta(session, team, -bet, f"Steal stake vs {target.name}")
+        apply_delta(session, team, -bet, f"Steal likme: {challenge.title} → {target.name}")
         session.add(
             ChallengeAttempt(
                 team_id=team.id,
@@ -146,7 +178,7 @@ async def bet_challenge(
     else:
         if amount <= 0 or amount > team.ip_balance:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Bet must be >0 and <= your IP")
-        apply_delta(session, team, -amount, f"Bet on challenge #{daily.challenge_id}")
+        apply_delta(session, team, -amount, f"Likme: {challenge.title}")
         session.add(
             ChallengeAttempt(
                 team_id=team.id, daily_challenge_id=daily.id, bet=amount, status="pending"
@@ -177,6 +209,14 @@ async def deposit_region(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Complete this region's key task before betting on it"
         )
+    # rule 3.2: must have spent at least 30 min in the region
+    mins = await presence_minutes(session, team.id, region_id)
+    if mins < settings.region_min_minutes:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Reģionā jāpavada vismaz {int(settings.region_min_minutes)} min "
+            f"(pašlaik {int(mins)} min)",
+        )
     # rule 3.9: 25 IP step
     if amount < MIN_DEPOSIT_STEP or amount % MIN_DEPOSIT_STEP != 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Deposit must be a multiple of 25 IP")
@@ -189,5 +229,30 @@ async def deposit_region(
     dep.amount += amount
     await session.flush()
     await recompute_holder(session, region_id)
+    await session.commit()
+    return _back()
+
+
+@router.post("/jeopardy")
+async def start_jeopardy(
+    value: float = Form(...),
+    team: Team = Depends(require_team),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rule 7: a broke team (0 IP) picks a Jeopardy card to try to earn IP back.
+    Creates a pending attempt for the admin to resolve."""
+    await _settle_team(session, team)
+    if team.ip_balance > 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Jeopardy pieejams tikai bez IP")
+    if value not in JEOPARDY_VALUES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Nederīga Jeopardy vērtība")
+    pending = await session.scalar(
+        select(JeopardyAttempt).where(
+            JeopardyAttempt.team_id == team.id, JeopardyAttempt.status == "pending"
+        )
+    )
+    if pending is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Jau ir gaidoša Jeopardy kārts")
+    session.add(JeopardyAttempt(team_id=team.id, value=value, status="pending"))
     await session.commit()
     return _back()

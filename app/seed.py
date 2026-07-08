@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 
 from .config import settings
 from .database import AsyncSessionLocal
-from .models import Challenge, GameState, Region, Team
+from .models import Challenge, GameState, JeopardyChallenge, Region, Team
 from .security import hash_password
 
 REGIONS = [
@@ -58,6 +58,16 @@ STEAL_CHALLENGES = {
     "zemgale": [("Zemgales reids", "Nozodziet 30% no izvēlētās komandas kapitāla.", 0.30)],
 }
 
+# Jeopardy challenges (value, title, description) — harder as the value rises.
+# Admins edit these in the panel; a broke team picks one to earn IP back.
+JEOPARDY_CARDS = [
+    (100, "Jeopardy 100", "Viegls uzdevums — aizpildiet admin panelī."),
+    (200, "Jeopardy 200", "Vidēji viegls uzdevums — aizpildiet admin panelī."),
+    (300, "Jeopardy 300", "Vidējs uzdevums — aizpildiet admin panelī."),
+    (400, "Jeopardy 400", "Grūts uzdevums — aizpildiet admin panelī."),
+    (500, "Jeopardy 500", "Ļoti grūts uzdevums — aizpildiet admin panelī."),
+]
+
 
 async def seed() -> None:
     async with AsyncSessionLocal() as session:
@@ -102,6 +112,12 @@ async def seed() -> None:
                         )
                     )
 
+        # Jeopardy challenges (one per value; created once)
+        n_jeopardy = await session.scalar(select(func.count()).select_from(JeopardyChallenge))
+        if not n_jeopardy:
+            for value, title, desc in JEOPARDY_CARDS:
+                session.add(JeopardyChallenge(value=value, title=title, description=desc))
+
         # Admin
         admin_exists = await session.scalar(
             select(Team).where(Team.username == settings.admin_username)
@@ -121,7 +137,7 @@ async def seed() -> None:
             select(func.count()).select_from(Team).where(Team.is_admin == False)  # noqa: E712
         )
         if not n_teams:
-            for i in range(1, 6):
+            for i in range(1, 5):  # 4 teams total
                 session.add(
                     Team(
                         name=f"Komanda {i}",

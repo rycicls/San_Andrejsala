@@ -57,19 +57,58 @@ The DB is auto-created and **seeded** on first boot with:
   When you want proper migrations, Alembic is wired up (see `alembic.ini`) —
   run `docker compose exec app alembic revision --autogenerate -m "msg"`.
 
-## Deploy to the Hetzner VM
+## Deploy to Hetzner
 
-One-time on the VM: install Docker, point a domain's DNS A-record at the VM IP,
-put the domain in `Caddyfile` (replace `:80`), open ports 80/443.
+The prod stack is `app` + `db` + **Caddy** (auto-HTTPS reverse proxy). Only Caddy
+is exposed (80/443); the app and Postgres are not reachable from the internet.
 
-Then from your Mac:
+### 1. Provision the VM
+- Create a Hetzner Cloud VM (Ubuntu 22.04/24.04). Note its public IP.
+- **(Recommended)** Point a domain's DNS **A record** at that IP. HTTPS needs a
+  domain — and team passwords are sent at login, so you want HTTPS.
+- Open the firewall for **22, 80, 443** (Hetzner Cloud Firewall or `ufw`).
 
+### 2. Install Docker on the VM
 ```bash
-./deploy.sh user@your-vm-ip
+ssh user@VM_IP
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"   # log out/in so `docker` works without sudo
 ```
 
-It rsyncs the repo up and runs `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
-Caddy fetches HTTPS certs automatically.
+### 3. Create the server-side `.env` (once)
+Secrets live only on the server; `deploy.sh` never overwrites this file.
+```bash
+mkdir -p ~/andrejsala && cd ~/andrejsala
+# create .env — start from the example values, then CHANGE the marked ones:
+#   POSTGRES_PASSWORD  -> a strong password
+#   DATABASE_URL       -> same user/password/db
+#   SECRET_KEY         -> openssl rand -hex 32
+#   ADMIN_PASSWORD     -> your admin password
+#   SITE_ADDRESS       -> your domain (e.g. game.example.com), or :80 for IP-only
+nano .env
+```
+
+### 4. Deploy from your Mac
+```bash
+./deploy.sh user@VM_IP
+```
+It rsyncs the code (excluding `.env`, `.git`, venvs, local DBs), then runs
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
+On first boot the DB is created + seeded automatically; with a real `SITE_ADDRESS`
+domain, Caddy fetches HTTPS certs on its own.
+
+Open `https://your-domain` (or `http://VM_IP` if you left `SITE_ADDRESS=:80`).
+
+### Operating it
+```bash
+ssh user@VM_IP 'cd andrejsala && docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f app'
+ssh user@VM_IP 'cd andrejsala && docker compose -f docker-compose.yml -f docker-compose.prod.yml ps'
+# reset everything (wipes the DB + re-seeds):
+ssh user@VM_IP 'cd andrejsala && docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v'
+```
+
+> **Note:** the admin password is only seeded on a *fresh* DB. To change it later
+> see the "admin password" note — it's a `docker exec` one-liner or a DB reset.
 
 ## V2 mechanics (implemented)
 
@@ -86,12 +125,16 @@ Caddy fetches HTTPS certs automatically.
   a team must complete it to (a) **see** that region's challenges, (b) bet on them,
   and (c) place region-capture deposits there (rules 2.1, 3.1). The first team to
   do a region's key task each day also gets +50 IP (`KEY_TASK_BONUS`, rule 2.3).
+- **30-minute region timer (rule 3.2)** — a team must have spent at least
+  `REGION_MIN_MINUTES` (30) of **continuous** presence in its current region
+  before it can place capture deposits there. The game loop advances the timer
+  **only while the game is running**, and **leaving the region resets it to 0**.
+  Shown on the dashboard as `X/30 min` with a countdown.
+- **Cross-day challenge carry-over (rule 2.8)** — because a team's key-task
+  unlock (`TeamKeyUnlock`) persists across days, a region unlocked on an earlier
+  day stays visible/bettable when the team re-enters it on later days.
 
-> **Schema note:** V2 added columns/tables. Since v1 uses `create_all` (not
-> migrations), apply the new schema by recreating the DB volume:
-> `docker compose down -v && docker compose up --build` (re-seeds fresh).
-
-## Still deferred / senate-adjudicated
-
-- The "30 minutes in a region before betting" timing gate (rule 3.2)
-- Cross-day challenge visibility carry-over (rule 2.8)
+> **Schema note:** these features added tables (`region_presence`, and earlier
+> V2 tables). `create_all` creates *new* tables automatically on startup, so a
+> restart is enough for the presence table — no data wipe needed. (Only *column*
+> additions to existing tables would require `docker compose down -v`.)

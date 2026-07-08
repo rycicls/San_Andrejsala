@@ -53,6 +53,25 @@
 </section>
 
 <section class="card">
+    <h2>Komandu konti</h2>
+    <p class="muted small">Maini komandas nosaukumu, lietotājvārdu vai paroli. Atstāj paroli tukšu, lai to nemainītu.</p>
+    {% for t in teams %}
+    <form method="post" action="/admin/teams/{{ t.id }}/credentials" class="inline" style="width:100%">
+        <label class="field">Nosaukums
+            <input type="text" name="name" value="{{ t.name }}" required style="min-width:9rem">
+        </label>
+        <label class="field">Lietotājvārds
+            <input type="text" name="username" value="{{ t.username }}" required style="min-width:9rem">
+        </label>
+        <label class="field">Jauna parole
+            <input type="text" name="password" placeholder="(nemainīt)" style="min-width:9rem">
+        </label>
+        <button type="submit">Saglabāt</button>
+    </form>
+    {% endfor %}
+</section>
+
+<section class="card">
     <h2>Izveidot izaicinājumu</h2>
     <p class="muted small">Pievieno jaunu izaicinājumu reģiona kopai. Pēc tam piešķir to dienai zemāk.</p>
     <form method="post" action="/admin/challenges/create">
@@ -71,14 +90,14 @@
                     <option value="steal">steal</option>
                 </select>
             </label>
-            <label class="field">Reizinātājs <span class="muted">(normālam)</span>
+            <label class="field" id="mult-field">Reizinātājs
                 <select name="multiplier">
                     {% for m in [1.5, 2.0, 2.5, 3.0, 3.5, 4.0] %}
                     <option value="{{ m }}" {{ "selected" if m == 2.0 else "" }}>x{{ '%.1f'|format(m) }}</option>
                     {% endfor %}
                 </select>
             </label>
-            <label class="field">Steal daļa <span class="muted">(steal)</span>
+            <label class="field" id="steal-field">Steal daļa
                 <select name="steal_pct">
                     {% for p in [30, 35, 40, 45, 50] %}
                     <option value="{{ '%.2f'|format(p/100) }}">{{ p }}%</option>
@@ -93,6 +112,21 @@
             <b>Steal daļa</b>: steal uzdevumam likme = šī daļa no komandas kapitāla (30–50%); nevajadzīgo lauku atstāj kā ir.
         </p>
     </form>
+
+    <h3 class="mt">⚡ Jeopardy izaicinājumi (grūtība pēc IP vērtības)</h3>
+    <p class="muted small">Šos iepriekš sagatavotos uzdevumus saņem komandas, kas palikušas bez IP.
+        Jo augstāka vērtība, jo grūtākam uzdevumam tie jābūt.</p>
+    {% for jc in jeopardy_challenges %}
+    <form method="post" action="/admin/jeopardy-challenge/{{ jc.id }}/edit" class="inline" style="width:100%">
+        <label class="field">{{ jc.value|int }} IP
+            <input type="text" name="title" value="{{ jc.title }}" required style="min-width:12rem">
+        </label>
+        <label class="field" style="flex:1">Apraksts
+            <input type="text" name="description" value="{{ jc.description }}" style="width:100%">
+        </label>
+        <button type="submit">Saglabāt</button>
+    </form>
+    {% endfor %}
 </section>
 
 <section class="card">
@@ -195,5 +229,44 @@
         {% endfor %}
     </table>
 </section>
+
+<section class="card">
+    <h2>⚡ Jeopardy (bankrotējušās komandas)</h2>
+    <table class="grid">
+        <tr><th>Komanda</th><th>Kārts</th><th>Uzdevums</th><th>Rezultāts</th></tr>
+        {% for j in jeopardy %}
+        <tr>
+            <td>{{ j.team.name }}</td>
+            <td>{{ j.attempt.value|int }} IP</td>
+            <td>{{ j.challenge.title if j.challenge else "?" }}</td>
+            <td>
+                <form method="post" action="/admin/jeopardy/{{ j.attempt.id }}/resolve" class="inline">
+                    <button name="result" value="success" class="ok">Pareizi</button>
+                    <button name="result" value="fail" class="bad">Nepareizi</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">Nav gaidošu Jeopardy karšu.</td></tr>
+        {% endfor %}
+    </table>
+</section>
+
+<script>
+// Show only the numeric field that matches the selected challenge type.
+(function () {
+    var kind = document.querySelector('select[name="kind"]');
+    var mult = document.getElementById('mult-field');
+    var steal = document.getElementById('steal-field');
+    if (!kind || !mult || !steal) return;
+    function update() {
+        var isSteal = kind.value === 'steal';
+        mult.style.display = isSteal ? 'none' : '';
+        steal.style.display = isSteal ? '' : 'none';
+    }
+    kind.addEventListener('change', update);
+    update();
+})();
+</script>
 
 {% endblock %}

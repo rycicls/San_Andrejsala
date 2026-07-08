@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     daily_ip: float = 100.0
     key_task_bonus: float = 50.0  # rule 2.3: first team to do a region's key task each day
     total_days: int = 3
+    region_min_minutes: float = 30.0  # rule 3.2: time in a region before betting on it
 
     admin_username: str = "admin"
     admin_password: str = "admin"

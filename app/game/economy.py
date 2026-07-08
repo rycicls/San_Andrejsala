@@ -20,13 +20,16 @@ def _region_tax(region: Region | None) -> float:
 
 
 def income_per_min(team: Team, regions: list[Region], teams: list[Team]) -> float:
-    """Rule 3.10: a region's holder earns base_tax * region_tax per team present
-    in that region (per minute). Sum across every region this team holds."""
+    """Rule 3.10 (Monopoly-style rent): a region's holder earns base_tax *
+    region_tax per *other* team present in that region, per minute. The holder
+    does not pay themselves. Sum across every region this team holds."""
     total = 0.0
     for r in regions:
         if r.held_by_team_id == team.id:
             present = sum(
-                1 for t in teams if t.current_region_id == r.id and not t.is_admin
+                1
+                for t in teams
+                if t.current_region_id == r.id and not t.is_admin and t.id != team.id
             )
             total += settings.base_tax * r.tax_rate * present
     return total

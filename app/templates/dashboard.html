@@ -20,6 +20,33 @@
     </div>
 </section>
 
+<section class="card jeopardy-card" id="jeopardy" data-pending="{{ 1 if jeopardy_pending else 0 }}" {% if not broke %}style="display:none"{% endif %}>
+    <h2>⚡ Jeopardy</h2>
+    <p class="muted small">Tev beidzās IP! Izvēlies grūtības kārti — jo augstāka vērtība, jo grūtāks
+        iepriekš sagatavots uzdevums un lielāka atlīdzība.</p>
+    {% if jeopardy_pending %}
+        <p class="pending">Izvēlēta {{ jeopardy_pending.value|int }} IP kārts — gaida senāta lēmumu.</p>
+        {% if jeopardy_current %}
+        <div class="challenge">
+            <div class="challenge-top">
+                <b>{{ jeopardy_current.title }}</b>
+                <span class="mult">{{ jeopardy_current.value|int }} IP</span>
+            </div>
+            <p class="muted">{{ jeopardy_current.description }}</p>
+        </div>
+        {% endif %}
+    {% else %}
+        <div class="jeopardy-cards">
+            {% for jc in jeopardy_challenges %}
+            <form method="post" action="/jeopardy">
+                <input type="hidden" name="value" value="{{ jc.value }}">
+                <button type="submit">{{ jc.value|int }}</button>
+            </form>
+            {% endfor %}
+        </div>
+    {% endif %}
+</section>
+
 <section class="card">
     <h2>Kur jūs esat?</h2>
     <form method="post" action="/set-region" class="inline">
@@ -108,27 +135,33 @@
 <section class="card">
     <h2>Reģionu ieņemšana</h2>
     <table class="grid">
-        <tr><th>Reģions</th><th>Tur</th><th>Jūsu depozīts</th><th>Likt (×25 IP)</th></tr>
+        <tr><th>Reģions</th><th>Tur</th><th>Jūsu depozīts</th><th>Laiks</th><th>Likt (×25 IP)</th></tr>
         {% for r in regions %}
+        {% set mins = region_minutes.get(r.id, 0) %}
+        {% set time_ok = mins >= region_min_minutes %}
         <tr>
             <td>{{ r.name }}</td>
             <td>{{ r.held_by.name if r.held_by else "neitrāls" }}</td>
             <td>{{ '%.0f'|format(my_deposits.get(r.id, 0)) }}</td>
+            <td class="{{ 'pos' if time_ok else 'muted' }}">{{ mins|int }}/{{ region_min_minutes|int }} min</td>
             <td>
-                {% if r.id in unlocked_region_ids %}
+                {% if r.id not in unlocked_region_ids %}
+                <span class="muted small">🔒 atslēgas uzdevums</span>
+                {% elif not time_ok %}
+                <span class="muted small">⏳ vēl {{ (region_min_minutes - mins)|round(0, 'ceil')|int }} min</span>
+                {% else %}
                 <form method="post" action="/regions/{{ r.id }}/deposit" class="inline">
                     <input type="number" name="amount" min="25" step="25" placeholder="25" required>
                     <button type="submit">+</button>
                 </form>
-                {% else %}
-                <span class="muted small">🔒 vispirms atslēgas uzdevums</span>
                 {% endif %}
             </td>
         </tr>
         {% endfor %}
     </table>
     <p class="muted small">Depozīts netiek atgriezts. Lielākais depozīts tur reģionu.
-        Turētājs nopelna reģiona nodokli par katru komandu, kas tur atrodas.</p>
+        Bez pārtraukuma jābūt reģionā vismaz {{ region_min_minutes|int }} min (skaitās kamēr spēle iet);
+        izejot no reģiona, skaitītājs nullējas. Turētājs nopelna reģiona nodokli par katru komandu, kas tur atrodas.</p>
 </section>
 
 <section class="card">
