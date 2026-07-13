@@ -17,6 +17,8 @@
     {% endif %}
 </header>
 <main class="wrap">
+    {% set flash = request.session.pop('flash', None) %}
+    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
     {% block content %}{% endblock %}
 </main>
 </body>

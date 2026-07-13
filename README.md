@@ -120,6 +120,21 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml down -v
 > **Note:** the admin password is only seeded on a *fresh* DB. To change it later
 > see the "admin password" note — it's a `docker exec` one-liner or a DB reset.
 
+### Backups
+`scripts/backup.sh` dumps the DB (gzipped) to `./backups` and keeps the newest 48
+files. Losing IP balances / captured regions mid-game is unrecoverable, so run it
+on a schedule during the event. Add a cron entry on the VM:
+```bash
+crontab -e
+# every 30 min (48 files = last 24h):
+*/30 * * * * /home/USER/andrejsala/scripts/backup.sh >> /home/USER/andrejsala/backups/backup.log 2>&1
+```
+Restore a dump:
+```bash
+gunzip -c backups/andrejsala-YYYYMMDD-HHMMSS.sql.gz \
+  | docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T db psql -U game -d andrejsala
+```
+
 ## V2 mechanics (implemented)
 
 - **Region-capture passive income** — a region's holder earns `base_tax * region_tax`

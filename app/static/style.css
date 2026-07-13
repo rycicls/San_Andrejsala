@@ -81,4 +81,8 @@ table.grid th { color: var(--muted); font-weight: 600; }
 .muted { color: var(--muted); }
 .small { font-size: .8rem; }
 .error { color: var(--neg); }
+.flash {
+    background: #3a2a12; border: 1px solid #e0b950; color: #f0d68a;
+    padding: .7rem 1rem; border-radius: 10px; margin-bottom: 1rem;
+}
 .admin-controls { display: flex; gap: .6rem; align-items: flex-end; flex-wrap: wrap; }
