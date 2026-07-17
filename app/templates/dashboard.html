@@ -65,6 +65,8 @@
 {% if region %}
 <section class="card">
     <h2>Atslēgas uzdevums — {{ region.name }}</h2>
+    {# rule 2.2: key_challenge is only loaded once an admin has revealed it to THIS
+       team (or the team already did it) — otherwise its text never reaches the page #}
     {% if key_challenge %}
     <div class="challenge">
         <div class="challenge-top">
@@ -72,17 +74,32 @@
             {% if region.id in unlocked_region_ids %}<span class="pill">atslēgts ✓</span>{% endif %}
         </div>
         <p class="muted">{{ key_challenge.description }}</p>
-        {% if day_unlocked %}
-            <p class="muted small">Šodien reģions jau atslēgts — izaicinājumi ir izlozēti.</p>
+        {% if region.id in unlocked_region_ids %}
+            <p class="done">Izpildīts — šis reģions jums ir atslēgts uz visu spēli.</p>
+        {% elif my_key_attempt and my_key_attempt.status == 'pending' %}
+            <p class="pending">Pieteikums iesniegts — gaida senāta apstiprinājumu.</p>
+        {% else %}
+            {% if my_key_attempt and my_key_attempt.status == 'fail' %}
+                <p class="done">Noraidīts — variet mēģināt vēlreiz.</p>
+            {% endif %}
+            {% if first_blood_taken %}
+                <p class="muted small">Šodienas bonuss jau ir paņemts — atslēgt joprojām vari.</p>
+            {% endif %}
+            <form method="post" action="/key-task" class="inline">
+                <button type="submit">Pieteikties atslēgas uzdevumam</button>
+            </form>
         {% endif %}
-        <form method="post" action="/key-task" class="inline">
-            <button type="submit">Izpildīt atslēgas uzdevumu</button>
-        </form>
-        <p class="muted small">Pirmā komanda dienā saņem bonusu un izlozē dienas izaicinājumus.
-            Jāizpilda, lai varētu likt likmes uz reģiona ieņemšanu.</p>
+        <p class="muted small">Katru reģionu atslēdz <b>vienu reizi visā spēlē</b>, un senātam tas
+            jāapstiprina. Bonusu saņem pirmā komanda, kas to izdara attiecīgajā dienā — iespēja
+            atjaunojas katru dienu tām komandām, kas reģionu vēl nav atslēgušas.
+            Atslēgšana vajadzīga, lai redzētu/liktu likmes uz šī reģiona izaicinājumiem un ieņemšanu.</p>
     </div>
     {% else %}
-    <p class="muted">Šim reģionam nav atslēgas uzdevuma.</p>
+    <div class="challenge locked">
+        <div class="challenge-top"><b>🔒 Vēl nav izsludināts</b></div>
+        <p class="muted">Uzdevumu uzzināsiet, ierodoties pie uzdevuma dēļa{% if region.board_location %}
+            ({{ region.board_location }}){% endif %}.</p>
+    </div>
     {% endif %}
 </section>
 {% endif %}
@@ -103,7 +120,8 @@
                 {% if d.challenge.kind == 'steal' %}
                     <span class="mult steal">STEAL {{ (d.challenge.steal_pct*100)|int }}%</span>
                 {% else %}
-                    <span class="mult">x{{ '%.2f'|format(d.challenge.multiplier) }}</span>
+                    <span class="mult">x{{ '%.2f'|format(d.multiplier) }}{% if d.multiplier > d.challenge.multiplier %}
+                        <span class="pos small" title="Reizinātājs audzis pēc neveiksmēm">↑</span>{% endif %}</span>
                 {% endif %}
             </div>
             <p class="muted">{{ d.challenge.description }}</p>

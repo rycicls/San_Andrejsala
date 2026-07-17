@@ -54,6 +54,8 @@ form.inline input, form.inline select { width: auto; margin-top: 0; }
 .field input, .field select { margin-top: 0; font-size: .9rem; text-transform: none; letter-spacing: 0; }
 .field .muted { text-transform: none; letter-spacing: 0; }
 .mt { margin-top: 1.3rem; }
+.key-task-row { border-bottom: 1px solid var(--line); padding-bottom: .6rem; margin-bottom: .6rem; }
+.key-task-row:last-child { border-bottom: 0; }
 h3 { font-size: 1rem; margin: 0 0 .6rem; }
 
 .balance-card { text-align: center; }

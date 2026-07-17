@@ -4,7 +4,6 @@ dashboard (Post/Redirect/Get) so the site works without any JS framework."""
 from fastapi import APIRouter, Depends, Form, HTTPException, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
@@ -24,8 +23,9 @@ from ..models import (
     DailyChallenge,
     GameState,
     JeopardyAttempt,
+    KeyTaskAttempt,
+    KeyTaskReveal,
     Region,
-    RegionDayUnlock,
     Team,
     TeamKeyUnlock,
 )
@@ -62,17 +62,17 @@ async def set_region(
 
 
 @router.post("/key-task")
-async def complete_key_task(
+async def claim_key_task(
     team: Team = Depends(require_team),
     session: AsyncSession = Depends(get_session),
 ):
-    """Complete the current region's key task (rule 2). Doing it reveals the
-    region's challenges for the day and unlocks region-capture betting (rule 3.1).
-    The first team to do it each day also gets a first-blood bonus (rule 2.3)."""
+    """Claim the current region's key task (rule 2) — creates a PENDING attempt
+    for the admin to approve, same as a challenge bet. Only on admin success does
+    the unlock (region visibility + capture betting, rule 3.1) and any first-blood
+    bonus actually apply — see admin.resolve_key_task."""
     region_id = team.current_region_id
     if not region_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Set your region first")
-    region = await session.get(Region, region_id)
     key = await session.scalar(
         select(Challenge).where(
             Challenge.region_id == region_id, Challenge.is_key == True  # noqa: E712
@@ -80,47 +80,37 @@ async def complete_key_task(
     )
     if key is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This region has no key task")
+    # rule 2.2: can't claim a task that hasn't been revealed to THIS team yet
+    revealed = await session.scalar(
+        select(KeyTaskReveal).where(
+            KeyTaskReveal.team_id == team.id, KeyTaskReveal.region_id == region_id
+        )
+    )
+    if revealed is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Atslēgas uzdevums vēl nav izsludināts")
     gs = await session.get(GameState, 1)
 
-    # persistent per-team unlock (capture-betting gate). Savepoint + catch makes
-    # a double-click / concurrent submit a harmless no-op instead of a 500.
-    already = await session.scalar(
-        select(TeamKeyUnlock).where(
-            TeamKeyUnlock.team_id == team.id, TeamKeyUnlock.region_id == region_id
+    # A region's key task is done ONCE per team for the whole game (not per day),
+    # so any pending or already-approved claim blocks a resubmit. Only a rejected
+    # claim can be retried.
+    prior = await session.scalar(
+        select(KeyTaskAttempt).where(
+            KeyTaskAttempt.team_id == team.id,
+            KeyTaskAttempt.region_id == region_id,
+            KeyTaskAttempt.status != "fail",
         )
     )
-    if already is None:
-        try:
-            async with session.begin_nested():
-                session.add(TeamKeyUnlock(team_id=team.id, region_id=region_id))
-        except IntegrityError:
-            pass  # another request unlocked it first
-
-    # first team this day → first-blood bonus. Claim atomically: if two teams
-    # race, only one insert of RegionDayUnlock(day, region) wins; the loser skips.
-    day_unlock = await session.scalar(
-        select(RegionDayUnlock).where(
-            RegionDayUnlock.game_day == gs.current_day,
-            RegionDayUnlock.region_id == region_id,
+    if prior is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Jau ir iesniegts pieteikums"
+            if prior.status == "pending"
+            else "Šī reģiona atslēgas uzdevums jau ir izpildīts",
         )
-    )
-    if day_unlock is None:
-        claimed = True
-        try:
-            async with session.begin_nested():
-                session.add(
-                    RegionDayUnlock(
-                        game_day=gs.current_day, region_id=region_id, first_team_id=team.id
-                    )
-                )
-        except IntegrityError:
-            claimed = False  # another team took first-blood
-        if claimed:
-            await _settle_team(session, team)
-            apply_delta(
-                session, team, settings.key_task_bonus, f"Key task first-blood ({region.name})"
-            )
 
+    session.add(
+        KeyTaskAttempt(team_id=team.id, region_id=region_id, game_day=gs.current_day)
+    )
     await session.commit()
     return _back()
 
@@ -136,6 +126,10 @@ async def bet_challenge(
     daily = await session.get(DailyChallenge, daily_id)
     if daily is None or daily.locked:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Challenge unavailable")
+    # rule 2.6/2.7: only *today's* cards are live — no betting on another day's
+    gs_now = await session.get(GameState, 1)
+    if daily.game_day != gs_now.current_day:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Šis izaicinājums nav šodienas")
     # can't bet on a region's challenges until you've done its key task (rule 2.1)
     unlocked = await session.scalar(
         select(TeamKeyUnlock).where(

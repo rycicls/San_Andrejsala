@@ -21,6 +21,28 @@
 </section>
 
 <section class="card">
+    <h2>Neizšķirtie uzdevumi</h2>
+    <table class="grid">
+        <tr><th>Komanda</th><th>Uzdevums</th><th>Detaļas</th><th>Rezultāts</th></tr>
+        {% for p in pending %}
+        <tr>
+            <td>{{ p.team.name }}</td>
+            <td>{{ p.label }}</td>
+            <td class="muted small">{{ p.detail }}</td>
+            <td>
+                <form method="post" action="{{ p.resolve_url }}" class="inline">
+                    <button name="result" value="success" class="ok">Izpildīts</button>
+                    <button name="result" value="fail" class="bad">Neizpildīts</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">Nav gaidošu uzdevumu.</td></tr>
+        {% endfor %}
+    </table>
+</section>
+
+<section class="card">
     <h2>Komandas</h2>
     <table class="grid">
         <tr><th>Komanda</th><th>IP</th><th>Reģions</th><th>Koriģēt IP</th><th>Mainīt reģionu</th></tr>
@@ -113,6 +135,37 @@
         </p>
     </form>
 
+    <h3 class="mt">🔑 Atslēgas uzdevumi (uzdevuma dēļi)</h3>
+    <p class="muted small">Katra reģiona atslēgas uzdevums. Komanda to <b>neredz</b>, kamēr tai
+        nav izsludināts — izsludini katrai komandai atsevišķi, kad tā ierodas pie dēļa
+        (2.2. punkts). Klikšķis uz komandas pārslēdz redzamību.</p>
+    {% for k in key_tasks %}
+    <div class="key-task-row">
+        <form method="post" action="/admin/key-tasks/{{ k.challenge.id }}/edit" class="inline" style="width:100%">
+            <label class="field">{{ k.region.name if k.region else "?" }}
+                <input type="text" name="title" value="{{ k.challenge.title }}" required style="min-width:12rem">
+            </label>
+            <label class="field" style="flex:1">Apraksts
+                <input type="text" name="description" value="{{ k.challenge.description }}" style="width:100%">
+            </label>
+            <button type="submit">Saglabāt</button>
+        </form>
+        <div class="admin-controls">
+            <span class="muted small">Izsludināts:</span>
+            {% for tr in k.teams %}
+            <form method="post" action="/admin/key-tasks/{{ k.challenge.id }}/deploy" class="inline">
+                <input type="hidden" name="team_id" value="{{ tr.team.id }}">
+                {% if tr.revealed %}
+                <button name="action" value="hide" class="ok" title="Redz — klikšķini, lai paslēptu">{{ tr.team.name }} ✓</button>
+                {% else %}
+                <button name="action" value="deploy" class="bad" title="Neredz — klikšķini, lai izsludinātu">{{ tr.team.name }}</button>
+                {% endif %}
+            </form>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+
     <h3 class="mt">⚡ Jeopardy izaicinājumi (grūtība pēc IP vērtības)</h3>
     <p class="muted small">Šos iepriekš sagatavotos uzdevumus saņem komandas, kas palikušas bez IP.
         Jo augstāka vērtība, jo grūtākam uzdevumam tie jābūt.</p>
@@ -198,34 +251,6 @@
         </tr>
         {% else %}
         <tr><td colspan="4" class="muted">Vēl nav piešķirtu izaicinājumu.</td></tr>
-        {% endfor %}
-    </table>
-</section>
-
-<section class="card">
-    <h2>Neizšķirtie izaicinājumi</h2>
-    <table class="grid">
-        <tr><th>Komanda</th><th>Izaicinājums</th><th>Likme</th><th>Rezultāts</th></tr>
-        {% for p in pending %}
-        <tr>
-            <td>{{ p.team.name }}</td>
-            <td>{{ p.challenge.title if p.challenge else "?" }}
-                {% if p.challenge and p.challenge.kind == 'steal' %}
-                    <span class="muted small">STEAL {{ (p.challenge.steal_pct*100)|int }}% → {{ p.target.name if p.target else "?" }}</span>
-                {% else %}
-                    <span class="muted small">x{{ '%.2f'|format(p.challenge.multiplier) if p.challenge else "" }}</span>
-                {% endif %}
-            </td>
-            <td>{{ '%.0f'|format(p.attempt.bet) }}</td>
-            <td>
-                <form method="post" action="/admin/attempts/{{ p.attempt.id }}/resolve" class="inline">
-                    <button name="result" value="success" class="ok">Izpildīts</button>
-                    <button name="result" value="fail" class="bad">Neizpildīts</button>
-                </form>
-            </td>
-        </tr>
-        {% else %}
-        <tr><td colspan="4" class="muted">Nav gaidošu izaicinājumu.</td></tr>
         {% endfor %}
     </table>
 </section>

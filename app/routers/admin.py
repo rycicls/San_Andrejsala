@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Form, HTTPException, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database import get_session
 from ..deps import require_admin
+from ..game.challenges import effective_multiplier
 from ..game.economy import apply_delta, settle
 from ..game.regions import income_for_team, reset_presence_on_move
 from ..security import hash_password
@@ -21,8 +23,12 @@ from ..models import (
     GameState,
     JeopardyAttempt,
     JeopardyChallenge,
+    KeyTaskAttempt,
+    KeyTaskReveal,
     Region,
+    RegionDayUnlock,
     Team,
+    TeamKeyUnlock,
 )
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
@@ -36,6 +42,65 @@ async def _settle(session: AsyncSession, team: Team, gs: GameState) -> None:
     region = await session.get(Region, team.current_region_id) if team.current_region_id else None
     income = await income_for_team(session, team)
     settle(team, region, gs.running, income)
+
+
+async def _award_first_blood(
+    session: AsyncSession, region: Region, game_day: int, gs: GameState
+) -> None:
+    """The day's 50 IP goes to the first team that *did* the region's key task —
+    the earliest CLAIM, not whichever the admin happens to approve first (rule 2.3
+    'Pirmā komanda kura izdara'). The chance renews each day (rule 2.4); since a
+    team may only ever do a region's key task once, each day it's contested by
+    whoever hasn't unlocked that region yet.
+
+    Walk the day's claims oldest-first: stop at any still-pending claim (we can't
+    know yet whether it beats the later ones), skip rejected ones, and award to
+    the first approved. Re-run on every resolution, so a rejection correctly hands
+    the bonus down to the next-earliest approved claim.
+    """
+    already = await session.scalar(
+        select(RegionDayUnlock).where(
+            RegionDayUnlock.game_day == game_day,
+            RegionDayUnlock.region_id == region.id,
+        )
+    )
+    if already is not None:
+        return  # this region/day's bonus is already settled
+
+    claims = list(
+        (
+            await session.execute(
+                select(KeyTaskAttempt)
+                .where(
+                    KeyTaskAttempt.region_id == region.id,
+                    KeyTaskAttempt.game_day == game_day,
+                )
+                .order_by(KeyTaskAttempt.created_at, KeyTaskAttempt.id)
+            )
+        ).scalars()
+    )
+    for claim in claims:
+        if claim.status == "pending":
+            return  # an earlier claim is undecided — wait for it
+        if claim.status == "success":
+            winner = await session.get(Team, claim.team_id)
+            try:
+                async with session.begin_nested():
+                    session.add(
+                        RegionDayUnlock(
+                            game_day=game_day,
+                            region_id=region.id,
+                            first_team_id=winner.id,
+                        )
+                    )
+            except IntegrityError:
+                return  # concurrent award already happened
+            await _settle(session, winner, gs)
+            apply_delta(
+                session, winner, settings.key_task_bonus, f"Key task first-blood ({region.name})"
+            )
+            return
+        # rejected -> keep walking to the next-earliest claim
 
 
 @router.post("/game")
@@ -243,11 +308,125 @@ async def resolve_attempt(
                 apply_delta(session, target, -stolen, f"Aplaupīts ({challenge.title}): {team.name}")
                 apply_delta(session, team, stolen, f"Nozagts no {target.name}: {challenge.title}")
         else:
-            payout = attempt.bet * challenge.multiplier  # bet returned WITH the multiplier
-            apply_delta(session, team, payout, f"Uzvara: {challenge.title} (x{challenge.multiplier})")
+            # rule 4.4: the card may have escalated from earlier teams' failures
+            mult = await effective_multiplier(session, daily.id, challenge)
+            payout = attempt.bet * mult  # bet returned WITH the multiplier
+            apply_delta(session, team, payout, f"Uzvara: {challenge.title} (x{mult:.2f})")
         # rule 4.8: once completed it locks for everyone that day
         daily.locked = True
         daily.completed_by_team_id = team.id
+    await session.commit()
+    return _back()
+
+
+@router.post("/key-task/{attempt_id}/resolve")
+async def resolve_key_task(
+    attempt_id: int,
+    result: str = Form(...),  # success | fail
+    session: AsyncSession = Depends(get_session),
+):
+    """Approve/reject a team's key-task claim. On success: grants the persistent
+    region unlock (rule 3.1) and, if this team is the day's first successful
+    claim, the first-blood bonus (rule 2.3)."""
+    attempt = await session.get(KeyTaskAttempt, attempt_id)
+    if attempt is None or attempt.status != "pending":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Attempt not pending")
+    gs = await session.get(GameState, 1)
+    team = await session.get(Team, attempt.team_id)
+    region = await session.get(Region, attempt.region_id)
+
+    attempt.status = "success" if result == "success" else "fail"
+    attempt.resolved_at = datetime.now(timezone.utc)
+
+    if attempt.status == "success":
+        # Persistent per-team unlock — rule 3.1: once, on any day, forever after.
+        already = await session.scalar(
+            select(TeamKeyUnlock).where(
+                TeamKeyUnlock.team_id == team.id, TeamKeyUnlock.region_id == region.id
+            )
+        )
+        if already is None:
+            try:
+                async with session.begin_nested():
+                    session.add(TeamKeyUnlock(team_id=team.id, region_id=region.id))
+            except IntegrityError:
+                pass  # concurrent approval already unlocked it
+
+    # (re)settle who gets this region's 50 IP for that day, by claim order
+    await _award_first_blood(session, region, attempt.game_day, gs)
+
+    await session.commit()
+    return _back()
+
+
+@router.post("/key-tasks/{cid}/edit")
+async def edit_key_task(
+    cid: int,
+    title: str = Form(...),
+    description: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Author the region's key task (the one written on the task board)."""
+    c = await session.get(Challenge, cid)
+    if c is None or not c.is_key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such key task")
+    if not title.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Nosaukums ir obligāts")
+    c.title = title.strip()
+    c.description = description
+    await session.commit()
+    return _back()
+
+
+async def _get_key_task(session: AsyncSession, challenge_id: int) -> Challenge:
+    kc = await session.get(Challenge, challenge_id)
+    if kc is None or not kc.is_key:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such key task")
+    return kc
+
+
+@router.post("/key-tasks/{challenge_id}/edit")
+async def edit_key_task(
+    challenge_id: int,
+    title: str = Form(...),
+    description: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Edit a region's key task text (what's on the board)."""
+    kc = await _get_key_task(session, challenge_id)
+    kc.title = title
+    kc.description = description
+    await session.commit()
+    return _back()
+
+
+@router.post("/key-tasks/{challenge_id}/deploy")
+async def deploy_key_task(
+    challenge_id: int,
+    team_id: int = Form(...),
+    action: str = Form(...),  # deploy | hide
+    session: AsyncSession = Depends(get_session),
+):
+    """Rule 2.2: reveal a region's key task to ONE team — the one that just showed
+    up at the board. Teams arrive at different times, so this is per team."""
+    kc = await _get_key_task(session, challenge_id)
+    team = await session.get(Team, team_id)
+    if team is None or team.is_admin:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such team")
+    existing = await session.scalar(
+        select(KeyTaskReveal).where(
+            KeyTaskReveal.team_id == team.id, KeyTaskReveal.region_id == kc.region_id
+        )
+    )
+    if action == "deploy":
+        if existing is None:
+            try:
+                async with session.begin_nested():
+                    session.add(KeyTaskReveal(team_id=team.id, region_id=kc.region_id))
+            except IntegrityError:
+                pass  # already revealed by a concurrent click
+    elif existing is not None:
+        await session.delete(existing)
     await session.commit()
     return _back()
 

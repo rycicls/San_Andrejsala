@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..database import get_session
 from ..deps import current_team
+from ..game.challenges import effective_multiplier
 from ..game.regions import income_for_team
 from ..game.taxes import compute_rate
 from ..models import (
@@ -20,6 +21,8 @@ from ..models import (
     GameState,
     JeopardyAttempt,
     JeopardyChallenge,
+    KeyTaskAttempt,
+    KeyTaskReveal,
     LedgerEntry,
     Region,
     RegionDayUnlock,
@@ -103,16 +106,28 @@ async def dashboard(
         ).scalars()
     )
 
-    # the current region's key task + whether the day's draw has happened
+    # the current region's key task + whether TODAY's first-blood is already gone.
+    # rule 2.2: only load the task once an admin has revealed it TO THIS TEAM (or
+    # the team already did it), so its text never reaches the page — view-source
+    # included — for teams still on their way to the board.
     key_challenge = None
-    day_unlocked = False
+    first_blood_taken = False
+    my_key_attempt = None
     if region is not None:
-        key_challenge = await session.scalar(
-            select(Challenge).where(
-                Challenge.region_id == region.id, Challenge.is_key == True  # noqa: E712
+        revealed = (
+            await session.scalar(
+                select(KeyTaskReveal).where(
+                    KeyTaskReveal.team_id == team.id, KeyTaskReveal.region_id == region.id
+                )
             )
-        )
-        day_unlocked = (
+        ) is not None
+        if revealed or region.id in unlocked_region_ids:
+            key_challenge = await session.scalar(
+                select(Challenge).where(
+                    Challenge.region_id == region.id, Challenge.is_key == True  # noqa: E712
+                )
+            )
+        first_blood_taken = (
             await session.scalar(
                 select(RegionDayUnlock).where(
                     RegionDayUnlock.game_day == gs.current_day,
@@ -120,6 +135,15 @@ async def dashboard(
                 )
             )
         ) is not None
+        # this team's latest claim for the region (any day) — gates the button below
+        my_key_attempt = await session.scalar(
+            select(KeyTaskAttempt)
+            .where(
+                KeyTaskAttempt.team_id == team.id,
+                KeyTaskAttempt.region_id == region.id,
+            )
+            .order_by(KeyTaskAttempt.id.desc())
+        )
 
     # other teams (steal targets)
     other_teams = list(
@@ -156,7 +180,15 @@ async def dashboard(
                     ChallengeAttempt.team_id == team.id,
                 )
             )
-            dailies.append({"daily": dc, "challenge": dc.challenge, "attempt": attempt})
+            dailies.append(
+                {
+                    "daily": dc,
+                    "challenge": dc.challenge,
+                    "attempt": attempt,
+                    # rule 4.4: escalated by other teams' failures
+                    "multiplier": await effective_multiplier(session, dc.id, dc.challenge),
+                }
+            )
 
     my_deposits = {
         d.region_id: d.amount
@@ -224,7 +256,8 @@ async def dashboard(
             "jeopardy_challenges": jeopardy_challenges,
             "jeopardy_current": jeopardy_current,
             "key_challenge": key_challenge,
-            "day_unlocked": day_unlocked,
+            "first_blood_taken": first_blood_taken,
+            "my_key_attempt": my_key_attempt,
             "region_unlocked": region_unlocked,
             "unlocked_region_ids": unlocked_region_ids,
             "other_teams": other_teams,
@@ -266,28 +299,88 @@ async def admin_page(
         ).scalars()
     )
 
-    pending_rows = list(
-        (
-            await session.execute(
-                select(ChallengeAttempt)
-                .where(ChallengeAttempt.status == "pending")
-                .order_by(ChallengeAttempt.id)
-            )
-        ).scalars()
-    )
+    # One unified approvals queue: key-task claims + challenge bets, oldest first.
     pending = []
-    for a in pending_rows:
-        daily = await session.get(DailyChallenge, a.daily_challenge_id)
-        challenge = await session.get(Challenge, daily.challenge_id) if daily else None
-        target = await session.get(Team, a.target_team_id) if a.target_team_id else None
+    for a in (
+        await session.execute(
+            select(KeyTaskAttempt).where(KeyTaskAttempt.status == "pending")
+        )
+    ).scalars():
+        region = region_by_id.get(a.region_id)
         pending.append(
             {
-                "attempt": a,
+                "created_at": a.created_at,
                 "team": await session.get(Team, a.team_id),
-                "challenge": challenge,
-                "target": target,
+                "label": f"Atslēgas uzdevums — {region.name if region else '?'}",
+                "detail": f"Diena {a.game_day}",
+                "resolve_url": f"/admin/key-task/{a.id}/resolve",
             }
         )
+    for a in (
+        await session.execute(
+            select(ChallengeAttempt).where(ChallengeAttempt.status == "pending")
+        )
+    ).scalars():
+        daily = await session.get(DailyChallenge, a.daily_challenge_id)
+        challenge = await session.get(Challenge, daily.challenge_id) if daily else None
+        if challenge and challenge.kind == "steal":
+            target = await session.get(Team, a.target_team_id) if a.target_team_id else None
+            detail = (
+                f"STEAL {int(challenge.steal_pct * 100)}% → "
+                f"{target.name if target else '?'} · likme {a.bet:.0f}"
+            )
+        elif challenge:
+            eff = await effective_multiplier(session, a.daily_challenge_id, challenge)
+            grown = " ↑" if eff > challenge.multiplier else ""  # rule 4.4 escalated
+            detail = f"x{eff:.2f}{grown} · likme {a.bet:.0f}"
+        else:
+            detail = f"likme {a.bet:.0f}"
+        pending.append(
+            {
+                "created_at": a.created_at,
+                "team": await session.get(Team, a.team_id),
+                "label": challenge.title if challenge else "?",
+                "detail": detail,
+                "resolve_url": f"/admin/attempts/{a.id}/resolve",
+            }
+        )
+    pending.sort(key=lambda x: x["created_at"])
+
+    # the key task behind each region's task board (authored + deployed by admins)
+    key_tasks = [
+        {"challenge": c, "region": region_by_id.get(c.region_id)}
+        for c in (
+            await session.execute(
+                select(Challenge)
+                .where(Challenge.is_key == True)  # noqa: E712
+                .order_by(Challenge.region_id)
+            )
+        ).scalars()
+    ]
+
+    # each region's key task — editable, and revealed PER TEAM (rule 2.2)
+    revealed_pairs = {
+        (r.team_id, r.region_id)
+        for r in (await session.execute(select(KeyTaskReveal))).scalars()
+    }
+    key_tasks = sorted(
+        (
+            {
+                "region": region_by_id.get(c.region_id),
+                "challenge": c,
+                "teams": [
+                    {"team": t, "revealed": (t.id, c.region_id) in revealed_pairs}
+                    for t in teams
+                ],
+            }
+            for c in (
+                await session.execute(
+                    select(Challenge).where(Challenge.is_key == True)  # noqa: E712
+                )
+            ).scalars()
+        ),
+        key=lambda k: k["region"].name if k["region"] else "",
+    )
 
     # editable Jeopardy challenges (one per value)
     jeopardy_challenges = list(
@@ -363,7 +456,9 @@ async def admin_page(
             "region_by_id": region_by_id,
             "teams": teams,
             "pending": pending,
+            "key_tasks": key_tasks,
             "jeopardy": jeopardy,
+            "key_tasks": key_tasks,
             "jeopardy_challenges": jeopardy_challenges,
             "assignable": assignable,
             "assigned": assigned,

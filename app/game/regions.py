@@ -70,7 +70,15 @@ async def get_deposit(session: AsyncSession, team_id: int, region_id: int) -> Re
 
 
 async def recompute_holder(session: AsyncSession, region_id: int) -> None:
-    """Region is held by the team with the strictly-largest deposit; ties => neutral."""
+    """Rule 3.8: the largest deposit holds the region. Rule 3.4: on a tie it stays
+    with whoever put points down FIRST — so a challenger must actually exceed the
+    holder, never merely match. (The rule's "beat it by at least 25 IP" needs no
+    extra check: every deposit is a multiple of 25, so exceeding at all means
+    exceeding by >= 25.) A region is only unheld when nobody has deposited.
+
+    "Who deposited first" = the lowest RegionDeposit row id, since a team's row is
+    created on its first deposit into that region.
+    """
     region = await session.get(Region, region_id)
     if region is None:
         return
@@ -81,9 +89,10 @@ async def recompute_holder(session: AsyncSession, region_id: int) -> None:
             )
         ).scalars()
     )
-    if not deposits:
+    top_amount = max((d.amount for d in deposits), default=0.0)
+    if not deposits or top_amount <= 0:
         region.held_by_team_id = None
         return
-    top = max(deposits, key=lambda d: d.amount)
-    tied = [d for d in deposits if d.amount == top.amount]
-    region.held_by_team_id = None if (len(tied) > 1 or top.amount <= 0) else top.team_id
+    tied = [d for d in deposits if d.amount == top_amount]
+    winner = min(tied, key=lambda d: d.id)  # earliest first-deposit wins a tie
+    region.held_by_team_id = winner.team_id

@@ -13,7 +13,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/h
 cd "$(dirname "$0")/.."          # repo root (where docker-compose.yml + .env live)
 mkdir -p backups
 
-KEEP=48                          # 48 x 30 min = last 24 hours
+KEEP=10                          # keep only the newest 10 dumps
 
 # read just the two names we need from .env (avoids sourcing the whole file)
 DB_USER="$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)"

@@ -148,8 +148,31 @@ gunzip -c backups/andrejsala-YYYYMMDD-HHMMSS.sql.gz \
   challenges are active for each day and region (author them in the admin panel,
   then assign to a day). There is **no random draw**. Each region has a key task;
   a team must complete it to (a) **see** that region's challenges, (b) bet on them,
-  and (c) place region-capture deposits there (rules 2.1, 3.1). The first team to
-  do a region's key task each day also gets +50 IP (`KEY_TASK_BONUS`, rule 2.3).
+  and (c) place region-capture deposits there (rules 2.1, 3.1).
+  - **Key tasks are revealed per team** (rule 2.2: *"Atslēgas uzdevumu uzzin
+    ierodoties pie uzdevuma dēļa"*). Teams reach a board at different times, so the
+    admin panel has a **toggle per region × per team** — click a team's name to
+    reveal/hide that region's key task for just them. Text is seeded but editable
+    in the panel. Until revealed to a given team it is **never rendered into that
+    team's page at all** (view-source can't leak it), and their claim is rejected
+    server-side. A team that already unlocked a region keeps seeing it regardless.
+  - Key-task claims are **approved by an admin** like any other challenge — they
+    appear in the same "Neizšķirtie uzdevumi" queue. Claiming alone unlocks nothing.
+  - A team may do each region's key task **only once in the whole game**. Once
+    approved, the unlock is permanent (rule 3.1: *"vismaz vienu reizi (jebkurā
+    dienā)"*) and the team can never claim that region again. Only a *rejected*
+    claim can be retried.
+  - The **+50 IP first-blood renews each day** (rule 2.4) — but since a team can
+    only ever unlock a region once, each day it's contested by whoever hasn't
+    unlocked that region yet.
+  - The bonus goes to the team whose **claim came first**, not whoever the admin
+    approves first (rule 2.3: *"Pirmā komanda kura **izdara**…"*): approving a
+    later claim while an earlier one is still pending awards nothing, and
+    rejecting the earliest hands it down to the next.
+- **Failure escalation (rule 4.4)** — each failed attempt raises that day's card by
+  **50% of its original** multiplier (x2.0 → x3.0 → x4.0…), so a card other teams
+  have flunked becomes more lucrative. Derived from the card's fail count, so it
+  resets each day. **Steal cards are excluded.**
 - **30-minute region timer (rule 3.2)** — a team must have spent at least
   `REGION_MIN_MINUTES` (30) of **continuous** presence in its current region
   before it can place capture deposits there. The game loop advances the timer
@@ -158,6 +181,11 @@ gunzip -c backups/andrejsala-YYYYMMDD-HHMMSS.sql.gz \
 - **Cross-day challenge carry-over (rule 2.8)** — because a team's key-task
   unlock (`TeamKeyUnlock`) persists across days, a region unlocked on an earlier
   day stays visible/bettable when the team re-enters it on later days.
+- **Region capture & ties (rules 3.4, 3.8)** — the largest deposit holds a region;
+  on a **tie it stays with whoever deposited first**, so a challenger must actually
+  exceed the holder, never merely match. (The rule's "beat it by ≥25 IP" needs no
+  extra check — every deposit is a multiple of 25, so exceeding at all means
+  exceeding by ≥25.) A region is unheld only while nobody has deposited.
 
 > **Schema note:** these features added tables (`region_presence`, and earlier
 > V2 tables). `create_all` creates *new* tables automatically on startup, so a

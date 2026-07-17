@@ -63,7 +63,7 @@ class Challenge(Base):
     kind: Mapped[str] = mapped_column(String(20), default="normal")  # normal | steal
     # steal: bet = steal_pct of your capital; on success steal that % of a target's capital
     steal_pct: Mapped[float] = mapped_column(Float, default=0.0)
-    # the region's key task (rule 2): first team to do it each day gets a bonus + triggers the draw
+    # the region's key task (rule 2): unlocks the region; first team each day gets a bonus
     is_key: Mapped[bool] = mapped_column(Boolean, default=False)
 
     region: Mapped[Region] = relationship()
@@ -136,9 +136,45 @@ class LedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class KeyTaskReveal(Base):
+    """Rule 2.2: 'Atslēgas uzdevumu uzzin ierodoties pie uzdevuma dēļa' — a team
+    only learns a region's key task once IT reaches the board, and teams arrive at
+    different times. So reveals are per team+region: a row here means an admin has
+    shown that region's key task to that team. No row = the team can't see it."""
+
+    __tablename__ = "key_task_reveals"
+    __table_args__ = (UniqueConstraint("team_id", "region_id", name="uq_keyreveal"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+
+
+class KeyTaskAttempt(Base):
+    """A team's claim of having completed a region's key task, pending admin
+    approval — mirrors ChallengeAttempt. Only on admin success does the team
+    actually get TeamKeyUnlock (+ first-blood bonus/RegionDayUnlock if they're
+    the day's first). A fail can be retried; pending/success cannot."""
+
+    __tablename__ = "key_task_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    region_id: Mapped[int] = mapped_column(ForeignKey("regions.id"))
+    game_day: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | success | fail
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    team: Mapped[Team] = relationship()
+    region: Mapped[Region] = relationship()
+
+
 class RegionDayUnlock(Base):
-    """Tracks, per region per day, the first team to complete the key task
-    (rule 2.3 first-blood bonus) and that the daily draw has been triggered."""
+    """The team that first completed a region's key task on a given day — the 50 IP
+    first-blood. The chance renews each day (rule 2.4), but only teams that haven't
+    already done that region's key task can compete for it (a team may complete each
+    region's key task only once in the whole game — enforced in api.claim_key_task)."""
 
     __tablename__ = "region_day_unlocks"
     __table_args__ = (UniqueConstraint("game_day", "region_id", name="uq_regionday"),)
